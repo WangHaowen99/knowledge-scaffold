@@ -11,22 +11,40 @@ import pytest
 
 from evaluation import mapping_rules
 
-MODELING = Path(__file__).resolve().parents[2] / 'modeling' / 'onto-modeling' / 'backend' / 'app' / 'services' / 'package_mapping.py'
+ONTO = Path(__file__).resolve().parents[2] / 'modeling' / 'onto-modeling'
+MODELING = ONTO / 'backend' / 'app' / 'services' / 'package_mapping.py'
+# Link parsing and name resolution in the relation rules come from the metamodel; onto-modeling serves its
+# image copy (the toolkit script) unless a project pins another one, and that copy needs only the standard library.
+METAMODEL = ONTO / 'assets' / 'workspace-toolkit' / 'scripts' / 'onto_metamodel.py'
+
+
+def _package(name):
+    package = types.ModuleType(name)
+    package.__path__ = []
+    return package
 
 
 @pytest.fixture(scope='module')
 def modeling():
-    if not MODELING.is_file():
+    if not MODELING.is_file() or not METAMODEL.is_file():
         pytest.skip('onto-modeling source is not available beside eval-service')
-    # The relation rules use nothing the module imports relatively; those services need the whole modeling app.
-    package = types.ModuleType('modeling_services')
-    package.__path__ = []
-    package.material_detect = types.ModuleType('modeling_services.material_detect')
-    spec = importlib.util.spec_from_file_location('modeling_services.package_mapping', MODELING)
+    # Other relative imports need the whole modeling app; the relation rules use only material_detect's name and the metamodel.
+    metamodel_spec = importlib.util.spec_from_file_location('modeling_onto_metamodel', METAMODEL)
+    onto_metamodel = importlib.util.module_from_spec(metamodel_spec)
+    modules = {name: _package(name) for name in ('modeling_app', 'modeling_app.services', 'modeling_app.kernel')}
+    modules['modeling_onto_metamodel'] = onto_metamodel  # its dataclasses look the module up while loading
+    modules['modeling_app.services.material_detect'] = types.ModuleType('modeling_app.services.material_detect')
+    kernel_metamodel = types.ModuleType('modeling_app.kernel.metamodel')
+    kernel_metamodel.current = lambda: onto_metamodel
+    modules['modeling_app.kernel.metamodel'] = kernel_metamodel
+    modules['modeling_app.services'].material_detect = modules['modeling_app.services.material_detect']
+    modules['modeling_app.kernel'].metamodel = kernel_metamodel
+    spec = importlib.util.spec_from_file_location('modeling_app.services.package_mapping', MODELING)
     module = importlib.util.module_from_spec(spec)
     with pytest.MonkeyPatch.context() as patch:
-        patch.setitem(sys.modules, 'modeling_services', package)
-        patch.setitem(sys.modules, 'modeling_services.material_detect', package.material_detect)
+        for name, value in modules.items():
+            patch.setitem(sys.modules, name, value)
+        metamodel_spec.loader.exec_module(onto_metamodel)
         spec.loader.exec_module(module)
     return module
 
