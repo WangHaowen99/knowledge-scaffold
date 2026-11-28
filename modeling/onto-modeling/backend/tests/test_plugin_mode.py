@@ -26,7 +26,7 @@ from app.routers import sessions as session_routes
 from app.services import agent_sessions, auth, conversation_store, streams
 from app.services.agent_sessions import SessionManager
 from app.services.engines.jiuwen_assets import JiuwenAssetLoader
-from app.services.packs import builtin, lockfile
+from app.services.packs import builtin, dev_skill, lockfile
 from app.services.plugin_mode import assembly, drafts
 from app.services.session_host import exec_records, fingerprint, injection
 from app.services.workspace import WorkspaceManager
@@ -175,8 +175,7 @@ def test_plugin_dev_assembly_contents_and_stable_hash(env):
     _client, manager, tmp_path = env
     directory = assembly.ensure(manager)
     assert directory.parent == tmp_path / "data" / "plugin-dev" and directory.name == assembly.digest(manager)
-    assert (directory / "CLAUDE.md").read_text(encoding="utf-8") == (
-        Path(config.ASSETS_DIR) / "plugin-mode" / "CLAUDE.md").read_text(encoding="utf-8")
+    assert (directory / "CLAUDE.md").read_text(encoding="utf-8") == assembly.rules(manager)
     for category in ("capability", "industry", "system"):
         skill = directory / "plugin-dev" / category
         for rel in ("SKILL.md", "platform.json", "references/protocol.md", f"references/{category}.md",
@@ -195,6 +194,26 @@ def test_plugin_dev_assembly_contents_and_stable_hash(env):
     # 内容不变，哈希不变：清掉进程缓存再生成还是同一个目录
     assembly.clear_cache()
     assert assembly.ensure(manager) == directory and assembly.is_plugin_dev(directory)
+
+
+def test_plugin_rules_take_the_categories_from_the_dev_skill(env):
+    """平台能力说明只有一处（开发 skill）：规则资产里不手写分类，装配时生成；连接器包说清原因和该走的路。"""
+    _client, manager, _tmp_path = env
+    template = (Path(config.ASSETS_DIR) / "plugin-mode" / "CLAUDE.md").read_text(encoding="utf-8")
+    assert template.count(assembly.CATEGORIES_SLOT) == 1
+    for word in ("`capability`", "`industry`", "`system`", "连接器", "网关", "内置页"):
+        assert word not in template, word
+    assert assembly.CATEGORIES is dev_skill.PLUGIN_MODE_CATEGORIES
+    rules = assembly.rules(manager)
+    assert assembly.CATEGORIES_SLOT not in rules
+    for category in dev_skill.PLUGIN_MODE_CATEGORIES:
+        skill = dev_skill._SKILLS[category]
+        assert f"`{category}` {skill['label']}：{skill['trigger']}" in rules
+        assert f".claude/plugin-dev/{category}/SKILL.md" in rules
+    # 页面：能力包能带自带页面（ADR-0105）；连接器：资料页接入数据源、管理员信任（ADR-0104），不是打进镜像
+    assert "包自带的页面" in rules and "打进" not in rules
+    assert "「接入数据源」" in rules and "「信任」" in rules
+    assert "MySQL" in rules and "PostgreSQL" in rules  # 随镜像的官方连接器，取自包仓库
 
 
 def test_both_engines_read_the_plugin_rules_and_the_offline_tool_works(env):

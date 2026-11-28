@@ -44,7 +44,8 @@ _SKILLS = {
     "capability": {
         "label": "能力包",
         "kinds": ("capability", "node"),
-        "trigger": "要给建模助手加命令、子代理、脚本、流程节点或平台内置页面",
+        "trigger": "要给建模助手加命令、子代理、脚本、流程节点（比如校验后面多一步检查），或给项目加一个页面"
+                   "（选平台内置页，或用包自带的页面）",
         "ask": "看不出这个包要让助手多做哪件事",
         "kind_choice": "能力包写 `capability`（缺省）。只往建模流程里加节点、不带页面和 skill 的写 `node`，`init` 时加 `--kind node`。",
         "init_kind": " [--kind node]",
@@ -77,9 +78,15 @@ _SKILLS = {
         "init_kind": " [--kind source]",
         "closing": "   - **上传后要管理员在插件中心「信任」才运行。** 连接器跑在连接器网关里，拿着凭据、连着业务网络；管理员信任这个版本后，"
                    "平台把它装进网关，下一个任务就用上，不用重建镜像。这一条必须原样告诉开发者。",
+        # 工作台插件开发（ADR-0087）不做这一类：安装只到本人、启用到项目，连接器要管理员信任后在网关里跑
+        "plugin_mode": "插件开发对话里做不了：连接器要管理员在插件中心「信任」后，在连接器网关里运行。"
+                       "用户要接数据库时这样说：在「资料」页点「接入数据源」，选连接器、填连接、测试后保存{sources}；"
+                       "列表里没有的库，要先有人在插件中心「多源连接器」分类下载开发 Skill 做好连接器、上传，管理员信任后才出现在列表里。",
     },
 }
 CATEGORIES = tuple(_SKILLS)
+# 工作台插件开发能做的分类（ADR-0087）：装配目录带这几份 skill，插件助手规则里的分类说明也由它生成
+PLUGIN_MODE_CATEGORIES = ("capability", "industry", "system")
 # 静态检查项（references/protocol.md 的表）；id 和 checks.run、PL-22 报告里的一致
 _CHECK_NOTES = (
     ("manifest", "`manifest.yaml` 能解析，必填字段合法"),
@@ -98,7 +105,7 @@ _CHECK_NOTES = (
     ("confine", "`flow.yaml` 声明了 `confine` 时才有这一项：只写 `scope_file`，是具体文件，不在 `ontology/` 和受保护目录下，落在本包节点的 `produces` 里"),
     ("activation", "`flow.yaml` 声明了 `activation` 或节点写了 `need: {when: activated}` 时才有这一项：`event` 是内核给的事件（现在只有 `materials_added`），`requires` 是本包声明的探针，`session` 是本包节点 produces 里的具体文件"),
     ("hooks", "不带 `settings.json`，只能追加 `PreToolUse` 守卫，守卫引用的脚本要存在"),
-    ("frontend", "页面只从平台内置里选，前端代码只放 `ui/` 下"),
+    ("frontend", "页面选平台内置页，或用本包自带页面（`ui:` 指向本包编辑器，只有上传的包能用）；前端代码只放 `ui/` 下"),
     ("ui", "`ui/` 只能是构建好的静态资源，编辑器入口是 `ui/<id>/index.html`"),
     ("extensions", "声明了界面入口、门禁、配置、指标、告警、MCP 工具时才有这一项：格式正确、名字不撞"),
     ("secrets", "不含疑似凭据"),
@@ -215,7 +222,8 @@ def protocol_markdown(snapshot: dict) -> str:
 - 列表字段：{_code(mf.LIST_FIELDS)}。
 - 命令放 `commands/<名>.md`，子代理放 `agents/<名>.md`，skill 放 `skills/<名>/`，脚本放 `scripts/<文件名>`，声明的都要存在。
 - 指向包内路径的字段：`flow`、`readme`、`knowledge_dir`，以及 `artifacts`、`views`、`docs`、`nodes` 的每一项，只能是包内相对路径。
-- `pages`：只能选平台内置页面 {_code(mf.BUILTIN_PAGES)}。图标 `nav.icon` 只能选 {_code(mf.NAV_ICONS)}。
+- `pages`：选平台内置页面 {_code(mf.BUILTIN_PAGES)}；或者用自带页面：`id` 不是内置页，写 `ui: <本包编辑器 id>`，
+  `page_api` 不低于 1.1，只有上传的包能用，写法见能力包的分类说明。图标 `nav.icon` 只能选 {_code(mf.NAV_ICONS)}。
 - `subpages`：挂在内核页面 {_code(mf.KERNEL_PAGES)} 下，`id` 只能选平台内置子页：{_code(mf.BUILTIN_SUBPAGES) or "现在没有，不要写"}。
 - `hooks`：只能写 `PreToolUse`，每项有 `matcher` 和 `command`。
 - 知识包的数据字段 `knowledge_dir`、`concepts`、`checks`、`standards`、`reference_dir`、`library_dir`、`examples`：写法在行业包和系统包 skill 的参考文档里。
@@ -267,6 +275,38 @@ zip ≤ {_mib(limits['zip_bytes'])}，解压后 ≤ {_mib(limits['extracted_byte
 - `depends` 依赖的包不在公开包里时，它是不是开发者自己装过的私有包。
 - 本机 Python 版本和平台（Python {snapshot['python']}）不同时，脚本语法以平台为准；本机没有 bash 时，`.sh` 语法没查。
 """
+
+
+def source_connectors(repository) -> list[str]:
+    """能在「接入数据源」里选的连接器（ADR-0104）：随网关交付的官方连接器，加管理员信任过的。只看清单，不连网关。"""
+    from .. import datasources
+
+    out = []
+    for name in repository.names():
+        version = repository.latest(name, "stable")
+        try:
+            manifest = repository.manifest(name, version) if version else None
+        except Exception:  # noqa: BLE001 - 坏掉的包不影响别的
+            continue
+        if manifest is None or manifest.kind != "provider" or not isinstance(manifest.raw.get("source"), dict):
+            continue
+        if repository.is_builtin(name, version) or version in datasources.trusted(repository, name):
+            out.append(manifest.label or name)
+    return sorted(out)
+
+
+def plugin_mode_brief(manager) -> str:
+    """插件助手规则里「能做哪几类」一节（ADR-0087）：和开发 skill 的说明同一处来源，平台能力变了一起变。"""
+    lines = [f"- `{category}` {_SKILLS[category]['label']}：{_SKILLS[category]['trigger']}。读 "
+             f"`.claude/plugin-dev/{category}/SKILL.md`。" for category in PLUGIN_MODE_CATEGORIES]
+    manager.packs.core_version()  # 官方连接器随镜像入库
+    sources = source_connectors(manager.packs.repository)
+    for category in CATEGORIES:
+        if category in PLUGIN_MODE_CATEGORIES:
+            continue
+        note = _SKILLS[category]["plugin_mode"].replace("{sources}", f"（现在能选：{'、'.join(sources)}）" if sources else "")
+        lines.append(f"- {_SKILLS[category]['label']}：{_SKILLS[category]['trigger']}的需求，{note}")
+    return "\n".join(lines)
 
 
 def _skill_markdown(template: str, category: str) -> str:

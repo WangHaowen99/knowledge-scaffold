@@ -2,7 +2,8 @@
 
 插件对话的那一轮，助手副本的 `.claude` 指向这里（`worktree` 的 claude-override 标记），两个引擎按同一套目录约定读：
 
-- `CLAUDE.md`：插件助手规则（`assets/plugin-mode/CLAUDE.md`），作 system prompt；
+- `CLAUDE.md`：插件助手规则（`assets/plugin-mode/CLAUDE.md`），作 system prompt；其中「能做哪几类」由
+  `dev_skill.plugin_mode_brief` 生成，和开发 skill 的分类说明同一处来源；
 - `plugin-dev/<分类>/`：能力包、行业包、系统知识包各一份开发 skill，和 PL-27 下载的是同一份生成代码；
 - `scripts/`：内核守卫的公共实现、`plugin_scope_guard.sh`（只放行写 `plugins/`）、`resource_read_guard.sh`；
 - `settings.json`：拒绝写 `.claude/**`、`CLAUDE.md`、`.onto/**`，PreToolUse 挂上面两个守卫；
@@ -32,7 +33,9 @@ ASSET_DIR = "plugin-mode"
 DIR_NAME = "plugin-dev"
 MANIFEST_JSON = "MANIFEST.json"
 MANIFEST_KIND = "plugin-dev"
-CATEGORIES = ("capability", "industry", "system")
+CATEGORIES = dev_skill.PLUGIN_MODE_CATEGORIES
+# 插件助手规则里由平台生成的一节
+CATEGORIES_SLOT = "{{categories}}"
 GUARD_SCRIPTS = ("_guard_common.py", "plugin_scope_guard.sh", "resource_read_guard.sh")
 KEEP = 4
 # 公开包变了最多晚这么久换装配目录：每条消息都要算指纹，平台快照要读全部公开包的清单
@@ -59,9 +62,15 @@ def settings() -> dict:
     }
 
 
+def rules(manager) -> str:
+    """插件助手规则：资产里的规则，填上平台生成的分类说明。"""
+    template = (Path(manager.assets_dir) / ASSET_DIR / "CLAUDE.md").read_text(encoding="utf-8")
+    return template.replace(CATEGORIES_SLOT, dev_skill.plugin_mode_brief(manager))
+
+
 def _render(manager) -> dict[str, bytes]:
     files: dict[str, bytes] = {
-        "CLAUDE.md": (Path(manager.assets_dir) / ASSET_DIR / "CLAUDE.md").read_bytes(),
+        "CLAUDE.md": rules(manager).encode("utf-8"),
         "settings.json": json.dumps(settings(), ensure_ascii=False, indent=2).encode("utf-8"),
     }
     for name in GUARD_SCRIPTS:
