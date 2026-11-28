@@ -80,8 +80,10 @@ FILE_CHUNK = 512 * 1024
 # streamed output (workflow_event of type workflow_agent_chunk) only keeps its row running and is not kept.
 RECORDED_PROVIDER = frozenset({"push_content", "todo_update", "workflow_event"})
 SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")  # used with fullmatch
+BROWSER_ID_RE = re.compile(r"[0-9a-f]{32}")
 
 Send = Callable[[dict[str, Any]], Awaitable[None]]
+ApprovalActor = tuple[str, str]  # Swarm handshake user (if present), browser ID
 
 
 class CheckpointStore:
@@ -190,8 +192,9 @@ def event_to_wire(envelope: Any) -> dict[str, Any] | None:
 class PageInteractions:
     """HarnessInteractionHandler that asks the user on the page."""
 
-    def __init__(self, send) -> None:  # noqa: ANN001
+    def __init__(self, send: Send, should_auto_approve: Callable[[str | None], bool]) -> None:
         self._send = send
+        self._should_auto_approve = should_auto_approve
         self._waiting: dict[str, tuple[asyncio.Future, Any]] = {}
 
     @property
@@ -200,24 +203,28 @@ class PageInteractions:
         return any(not future.done() for future, _ in self._waiting.values())
 
     async def handle(self, request: Any) -> Any:
-        from openjiuwen.harness_protocol import ToolApprovalRequest
+        from openjiuwen.harness_protocol import ToolApprovalDecision, ToolApprovalRequest, ToolApprovalResponse
 
+        wire = {"t": "ask", "request_id": request.request_id, "turn_id": request.turn_id}
+        if isinstance(request, ToolApprovalRequest):
+            wire.update(kind="approval", tool_name=request.tool_name)
+            if self._should_auto_approve(request.turn_id):
+                # A single event records the result without briefly showing a pending approval.
+                await self._send({**wire, "answered": "自动允许"})
+                return ToolApprovalResponse(request_id=request.request_id, decision=ToolApprovalDecision.ALLOW)
+            wire.update(prompt=request.title or "", arguments=_plain(request.arguments))
+        else:
+            wire.update(kind="question", prompt=getattr(request, "prompt", ""),
+                        choices=list(getattr(request, "choices", ()) or ()))
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._waiting[request.request_id] = (future, request)
-        if isinstance(request, ToolApprovalRequest):
-            await self._send({"t": "ask", "kind": "approval", "request_id": request.request_id,
-                              "turn_id": request.turn_id, "prompt": request.title or "",
-                              "tool_name": request.tool_name, "arguments": _plain(request.arguments)})
-        else:
-            await self._send({"t": "ask", "kind": "question", "request_id": request.request_id,
-                              "turn_id": request.turn_id, "prompt": getattr(request, "prompt", ""),
-                              "choices": list(getattr(request, "choices", ()) or ())})
         try:
+            await self._send(wire)
             return await future
         finally:
             self._waiting.pop(request.request_id, None)
 
-    def answer(self, request_id: str, msg: dict[str, Any]) -> bool:
+    def answer(self, request_id: str, msg: dict[str, Any]) -> Any | None:
         from openjiuwen.harness_protocol import (
             InteractionResponseStatus, ToolApprovalDecision, ToolApprovalRequest, ToolApprovalResponse,
             UserInputResponse,
@@ -225,10 +232,10 @@ class PageInteractions:
 
         entry = self._waiting.get(request_id)
         if entry is None:
-            return False
+            return None
         future, request = entry
         if future.done():
-            return False
+            return None
         if isinstance(request, ToolApprovalRequest):
             decision = {"allow": ToolApprovalDecision.ALLOW, "deny": ToolApprovalDecision.DENY,
                         "abort": ToolApprovalDecision.ABORT}.get(str(msg.get("decision")), ToolApprovalDecision.DENY)
@@ -239,7 +246,7 @@ class PageInteractions:
             future.set_result(UserInputResponse(
                 request_id=request_id, status=InteractionResponseStatus.COMPLETED, content=str(msg.get("content") or ""),
             ))
-        return True
+        return request
 
     async def cancel(self, request_id: str, *, reason: Any = None) -> None:
         from openjiuwen.harness_protocol import (
@@ -248,14 +255,15 @@ class PageInteractions:
         )
 
         entry = self._waiting.pop(request_id, None)
-        if entry and not entry[0].done():
-            # Answered as withdrawn, never cancelled: a CancelledError would escape the harness's
-            # turn (it catches Exception) and then its stop(), leaving the turn without an end.
-            future, request = entry
-            if isinstance(request, ToolApprovalRequest):
-                future.set_result(ToolApprovalResponse(request_id=request_id, decision=ToolApprovalDecision.ABORT))
-            else:
-                future.set_result(UserInputResponse(request_id=request_id, status=InteractionResponseStatus.CANCELLED))
+        if entry is None or entry[0].done():
+            return
+        # Answered as withdrawn, never cancelled: a CancelledError would escape the harness's
+        # turn (it catches Exception) and then its stop(), leaving the turn without an end.
+        future, request = entry
+        if isinstance(request, ToolApprovalRequest):
+            future.set_result(ToolApprovalResponse(request_id=request_id, decision=ToolApprovalDecision.ABORT))
+        else:
+            future.set_result(UserInputResponse(request_id=request_id, status=InteractionResponseStatus.CANCELLED))
         await self._send({"t": "ask_cancelled", "request_id": request_id,
                           "reason": getattr(reason, "value", str(reason))})
 
@@ -506,14 +514,20 @@ async def list_history(limit: int = HISTORY_LIMIT) -> list[dict[str, Any]]:
 class Conversation:
     """A harness cycle with its event pump; page connections attach and detach."""
 
-    def __init__(self, transcript: Transcript) -> None:
+    def __init__(self, transcript: Transcript, approval_owner: ApprovalActor | None = None) -> None:
         self.transcript = transcript
         self.host_session_id = transcript.id
         self.engine = transcript.engine
         self.harness: Any = None
         self.pump: asyncio.Task | None = None
         self.subscribers: set[Send] = set()
-        self.interactions = PageInteractions(self.emit)
+        self._approval_owner = approval_owner
+        self._offers_tool_approval = False
+        self.bypass_permission = False
+        self.bypass_revision = 0
+        self._approval_turns: set[str] = set()
+        self._external_steers = 0
+        self.interactions = PageInteractions(self.emit, self._should_auto_approve)
         self.running = False
         self.closed = False
         self._closed = asyncio.Event()
@@ -524,9 +538,30 @@ class Conversation:
         """Still working; a turn waiting for an answer nobody may give does not count."""
         return self.running and not self.interactions.pending
 
+    def can_manage_bypass(self, actor: ApprovalActor | None) -> bool:
+        return self._offers_tool_approval and not self.closed and actor is not None and actor == self._approval_owner
+
+    def _should_auto_approve(self, turn_id: str | None) -> bool:
+        return (
+            self.bypass_permission and not self.closed
+            and not self._external_steers and turn_id in self._approval_turns
+        )
+
+    async def set_bypass_permission(
+        self, enabled: bool, actor: ApprovalActor | None, client_id: Any,
+    ) -> None:
+        if not self.can_manage_bypass(actor):
+            raise PermissionError("当前页面无权更改此对话的自动审批设置")
+        self.bypass_permission = enabled
+        self.bypass_revision += 1
+        await self.broadcast({
+            "t": "bypass_permission", "host_session_id": self.host_session_id, "enabled": enabled,
+            "revision": self.bypass_revision, "client_id": client_id,
+        })
+
     async def broadcast(self, payload: dict[str, Any], skip: Send | None = None) -> None:
         for send in list(self.subscribers):
-            if send is skip:
+            if send is skip or send not in self.subscribers:
                 continue
             try:
                 await send(payload)
@@ -536,6 +571,8 @@ class Conversation:
     async def emit(self, wire: dict[str, Any]) -> None:
         if wire.get("t") == "state":
             self.running = wire.get("state") == "running"
+        elif wire.get("t") == "turn" and wire.get("kind") not in {"started", "paused", "resumed"}:
+            self._approval_turns.discard(wire.get("turn_id"))
         self.transcript.record(wire)
         if not self.subscribers:
             self.schedule_idle_stop()  # also when a turn starts waiting for a page that is not there
@@ -579,6 +616,8 @@ class Conversation:
         offered = frozenset({
             HostCapability.USER_INPUT, HostCapability.TOOL_APPROVAL, HostCapability.CHECKPOINT_SINK,
         })
+        host_capabilities = offered & provider().card.optional_host_capabilities
+        self._offers_tool_approval = HostCapability.TOOL_APPROVAL in host_capabilities
         checkpoint = CHECKPOINTS.latest.get(self.host_session_id)
         files = _files_dir(self.host_session_id)
         await asyncio.to_thread(files.mkdir, parents=True, exist_ok=True)
@@ -588,7 +627,7 @@ class Conversation:
             host_session_id=self.host_session_id,
             system_prompt="",
             # only what the engine can use: Loop Forest never asks, so no question/approval channel
-            host_capabilities=offered & provider().card.optional_host_capabilities,
+            host_capabilities=host_capabilities,
             resume_policy=ResumePolicy.RESUME_IF_AVAILABLE if checkpoint else ResumePolicy.NEW,
             checkpoint=checkpoint,
             checkpoint_sink=CHECKPOINTS,
@@ -617,7 +656,10 @@ class Conversation:
 
         self.pump = asyncio.create_task(pump())
 
-    async def send(self, text: str, kb_ids: list[str], client_id: str, steer: bool, origin: Send | None = None) -> Any:
+    async def send(
+        self, text: str, kb_ids: list[str], client_id: str, steer: bool, origin: Send | None = None,
+        *, actor: ApprovalActor | None = None,
+    ) -> Any:
         """Deliver a page input; ``origin`` (the page that sent it) already shows it, the other pages are told."""
         from openjiuwen.harness_protocol import DeliveryMode, HarnessInput
 
@@ -632,9 +674,20 @@ class Conversation:
         harness = self.harness
         if harness is None:
             raise RuntimeError("会话已结束")
+        from_owner = actor is not None and actor == self._approval_owner
         if steer:
+            external = self._approval_owner is not None and not from_owner
+            if external:
+                # A turn that another browser can steer must go through manual approval.
+                self._external_steers += 1
             # kept only once accepted: a steer that finds no running turn leaves no trace
-            receipt = await harness.send(HarnessInput(content=text), mode=DeliveryMode.STEER)
+            try:
+                receipt = await harness.send(HarnessInput(content=text), mode=DeliveryMode.STEER)
+                if external:
+                    self._approval_turns.discard(receipt.turn_id)
+            finally:
+                if external:
+                    self._external_steers -= 1
             entry = {"t": "steer", "text": text}
             self.transcript.add(entry)
             await self.broadcast(entry, skip=origin)
@@ -648,14 +701,20 @@ class Conversation:
             self.transcript.add(rejected)
             await self.broadcast(rejected, skip=origin)
             raise
+        if from_owner:
+            self._approval_turns.add(receipt.turn_id)
         entry["turn_id"] = receipt.turn_id
         return receipt
 
-    async def answer(self, request_id: str, msg: dict[str, Any], origin: Send | None = None) -> None:
-        if self.interactions.answer(request_id, msg):
-            entry = {"t": "answered", "request_id": request_id, "label": str(msg.get("label") or "")}
-            self.transcript.add(entry)
-            await self.broadcast(entry, skip=origin)
+    async def answer(self, request_id: str, msg: dict[str, Any], *, actor: ApprovalActor | None = None) -> None:
+        request = self.interactions.answer(request_id, msg)
+        if request is None:
+            return
+        if actor != self._approval_owner:
+            self._approval_turns.discard(request.turn_id)
+        entry = {"t": "answered", "request_id": request_id, "label": str(msg.get("label") or "")}
+        self.transcript.add(entry)
+        await self.broadcast(entry)
 
     async def close(self) -> None:
         """Stop the harness and save the transcript; a second call waits for the first.
@@ -744,7 +803,9 @@ class ConversationUnavailable(Exception):
         self.transcript = transcript
 
 
-async def open_conversation(host_session_id: str, engine: str) -> tuple[Conversation, bool]:
+async def open_conversation(
+    host_session_id: str, engine: str, *, actor: ApprovalActor | None = None,
+) -> tuple[Conversation, bool]:
     """The live conversation for this id, or a new harness that continues its transcript.
 
     Returns the conversation and whether it was already live (its open turns are
@@ -763,9 +824,9 @@ async def open_conversation(host_session_id: str, engine: str) -> tuple[Conversa
                 return live, True
             await live.close()  # still saving: continue from what it wrote
         if await asyncio.to_thread(_tombstone(host_session_id).exists):
-            return await open_conversation("", engine)
+            return await open_conversation("", engine, actor=actor)
         transcript = await asyncio.to_thread(Transcript.load, host_session_id) or Transcript(host_session_id, engine)
-        conversation = Conversation(transcript)
+        conversation = Conversation(transcript, approval_owner=actor)
         try:
             await conversation.start()
         except Exception as exc:
@@ -892,20 +953,19 @@ async def _engines() -> list[dict[str, Any]]:
     return found
 
 
-async def handshake_denied(websocket: Any) -> bool:
-    """Apply Swarm's own login check to this route; True when the connection was refused.
+async def authenticate_page(websocket: Any) -> tuple[bool, str]:
+    """Apply Swarm's login check and retain the user identity for approval settings.
 
     Swarm checks a handshake (``WebChannel.authenticate_handshake``, set up when Swarm login is on) only for
     its main ``/ws``, not for plugin routes, so the plugin asks the same hook. Without Swarm login there is
     no hook and nothing changes; foreign Origins are refused at the edge (deploy/compose/edge/nginx.conf).
-    Kept the same as kb-manager's: Swarm installs each plugin directory on its own.
     """
 
     scope = getattr(websocket, "scope", None) or {}
     channel = getattr(getattr(scope.get("app"), "state", None), "web_channel", None)
     authenticate = getattr(channel, "authenticate_handshake", None)
     if authenticate is None:
-        return False
+        return True, ""
     client = scope.get("client") or ("", "")
     query = scope.get("query_string", b"").decode("latin-1")
     path = scope.get("path", "") + (f"?{query}" if query else "")
@@ -913,12 +973,12 @@ async def handshake_denied(websocket: Any) -> bool:
         result = await authenticate(path=path, headers=websocket.headers, remote=f"{client[0]}:{client[1]}" if client[0] else "",
                                     channel="web")
         allowed = result is None or bool(getattr(result, "success", True))
+        if allowed:
+            return True, str(getattr(result, "user_id", "") or "").strip()
     except Exception:  # noqa: BLE001 - a login check that fails refuses the connection
         logger.warning("[%s] handshake check failed", PLUGIN_ID, exc_info=True)
-        allowed = False
-    if not allowed:
-        await websocket.close(code=1008)
-    return not allowed
+    await websocket.close(code=1008)
+    return False, ""
 
 
 class DaAnalystPlugin(ApplicationPluginExtension):
@@ -942,7 +1002,8 @@ class DaAnalystPlugin(ApplicationPluginExtension):
         return (WebSocketRouteContribution(path=WS_PATH, endpoint=self._serve),)
 
     async def _serve(self, websocket: Any) -> None:
-        if await handshake_denied(websocket):
+        allowed, user_id = await authenticate_page(websocket)
+        if not allowed:
             return
         await websocket.accept()
         lock = asyncio.Lock()
@@ -957,6 +1018,7 @@ class DaAnalystPlugin(ApplicationPluginExtension):
                 await websocket.send_text(text)
 
         convo: Conversation | None = None
+        actor: ApprovalActor | None = None
         tasks: set[asyncio.Task] = set()
         # Session-shaping messages run in arrival order (a `send` right behind a
         # `start` must see the new harness); abort/answer and file reads never wait behind them.
@@ -969,9 +1031,11 @@ class DaAnalystPlugin(ApplicationPluginExtension):
                 async with ordered:
                     await dispatch(msg)
 
-        def current() -> Conversation:
+        def current(expected_id: str | None = None) -> Conversation:
             if convo is None or convo.harness is None:
                 raise RuntimeError("会话尚未开始")
+            if expected_id is not None and expected_id != convo.host_session_id:
+                raise RuntimeError("对话已切换，请重试")
             return convo
 
         def leave() -> None:
@@ -981,7 +1045,7 @@ class DaAnalystPlugin(ApplicationPluginExtension):
                 convo = None
 
         async def dispatch(msg: dict[str, Any]) -> None:
-            nonlocal convo
+            nonlocal convo, actor
             kind = msg.get("type")
             try:
                 if kind == "hello":
@@ -991,9 +1055,14 @@ class DaAnalystPlugin(ApplicationPluginExtension):
                     await send({"t": "hello", "kbs": kbs, "unavailable": unavailable, "engines": engines,
                                 "da_ready": any(e["ready"] for e in engines if e["id"] == DEFAULT_ENGINE)})
                 elif kind == "start":
+                    browser_id = msg.get("browser_id")
+                    opener = None
+                    if isinstance(browser_id, str) and BROWSER_ID_RE.fullmatch(browser_id):
+                        opener = (user_id, browser_id)
                     try:
                         opened, was_live = await open_conversation(
-                            str(msg.get("host_session_id") or ""), str(msg.get("engine") or DEFAULT_ENGINE))
+                            str(msg.get("host_session_id") or ""), str(msg.get("engine") or DEFAULT_ENGINE),
+                            actor=opener)
                     except ConversationUnavailable as exc:
                         leave()
                         if exc.transcript.events:
@@ -1004,21 +1073,32 @@ class DaAnalystPlugin(ApplicationPluginExtension):
                         return  # the page left meanwhile; the idle stop takes care of it
                     if convo is not opened:
                         leave()
-                    convo = opened
+                    convo, actor = opened, opener
+                    can_manage_bypass = opened.can_manage_bypass(actor)
                     # attach and snapshot without yielding, so every later event follows `started`
                     opened.attach(send)
                     await send({**_started(opened.transcript), "resumed": was_live or bool(opened.transcript.events),
                                 "live": was_live, "running": opened.running,
+                                "can_manage_bypass": can_manage_bypass,
+                                "bypass_permission": can_manage_bypass and opened.bypass_permission,
+                                "bypass_revision": opened.bypass_revision,
                                 "provider_session_id": opened.harness.provider_session_id})
+                elif kind == "set_bypass_permission":
+                    enabled = msg.get("enabled")
+                    if not isinstance(enabled, bool):
+                        raise ValueError("自动审批设置须为开或关")
+                    await current(str(msg.get("host_session_id") or "")).set_bypass_permission(
+                        enabled, actor, msg.get("client_id"))
                 elif kind == "send":
                     receipt = await current().send(str(msg.get("text") or ""), list(msg.get("kb_ids") or []),
-                                                   str(msg.get("client_id") or ""), bool(msg.get("steer")), send)
+                                                    str(msg.get("client_id") or ""), bool(msg.get("steer")), send,
+                                                    actor=actor)
                     await send({"t": "accepted", "turn_id": receipt.turn_id, "mode": receipt.accepted_mode.value,
                                 "client_id": msg.get("client_id")})
                 elif kind == "abort":
                     await current().harness.abort()
                 elif kind == "answer":
-                    await current().answer(str(msg.get("request_id") or ""), msg, send)
+                    await current(msg.get("host_session_id")).answer(str(msg.get("request_id") or ""), msg, actor=actor)
                 elif kind == "history":
                     await send({"t": "history", "items": await list_history()})
                 elif kind == "file":
