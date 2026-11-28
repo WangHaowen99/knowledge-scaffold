@@ -295,6 +295,23 @@ def test_plugin_conversation_create_and_bind(env):
     assert conversation_store.bind_plugin(project_id, second["id"], "x-pack", "某包")["title"] == "我的插件"
 
 
+def test_plugin_conversation_takes_its_first_message_as_title_until_bound(env):
+    """几条还没写出草稿的插件对话不能都叫「新插件」：首条消息换掉占位标题，绑了草稿后改叫插件名。"""
+    client, _manager, _tmp = env
+    project_id = project(client)
+    first = conversation_store.create(project_id, kind="plugin")
+    conversation_store.note_message(project_id, first["id"], "做一个发布前的命名检查")
+    assert conversation_store.entry(project_id, first["id"])["title"] == "做一个发布前的命名检查"
+    conversation_store.note_message(project_id, first["id"], "再加一条")  # 已有标题不再换
+    assert conversation_store.entry(project_id, first["id"])["title"] == "做一个发布前的命名检查"
+    assert conversation_store.bind_plugin(project_id, first["id"], "naming", "命名检查")["title"] == "命名检查"
+    # 手工命名成「新插件」的不算占位
+    manual = conversation_store.create(project_id, kind="plugin")
+    conversation_store.rename(project_id, manual["id"], "新插件")
+    conversation_store.note_message(project_id, manual["id"], "别的需求")
+    assert conversation_store.entry(project_id, manual["id"])["title"] == "新插件"
+
+
 class _Engine:
     name = "claude"
 

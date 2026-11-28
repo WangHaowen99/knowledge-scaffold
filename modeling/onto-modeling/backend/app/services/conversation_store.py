@@ -256,11 +256,14 @@ def rename(project_id: str, conversation_id: str, title: str) -> dict:
 
 
 def note_message(project_id: str, conversation_id: str, text: str) -> None:
-    """首条用户消息落定自动标题；已有标题（含手动命名）不覆盖。"""
+    """首条用户消息落定自动标题；已有标题（含手动命名）不覆盖。插件对话建时的「新插件」只是占位，
+    没绑草稿前照样换成首条消息（不然几条新对话都叫「新插件」，只能靠时间区分）；绑了草稿后标题是插件名。"""
     with _lock:
         conversations = _load(project_id)
         entry = conversations.get(conversation_id)
-        if entry is None or entry.get("title"):
+        placeholder = (entry is not None and entry.get("kind") == "plugin" and not entry.get("plugin")
+                       and not entry.get("title_manual") and entry.get("title") == PLUGIN_TITLE)
+        if entry is None or (entry.get("title") and not placeholder):
             return
         title = auto_title(text)
         if not title:
