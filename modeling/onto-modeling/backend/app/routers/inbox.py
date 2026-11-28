@@ -71,8 +71,12 @@ def _detail(project_id: str, item: dict) -> dict | None:
         return {"changeset": changesets.view(record), "entities": (record.get("conflict") or {}).get("entities") or []}
     if kind == "stale":
         node = extra.get("node") or {}
-        kinds = [workspace_labels.KIND_LABELS.get(str(kind), "上游内容") for kind in node.get("stale_on") or []]
-        return {"upstream_diff": {"title": f"上游（{'、'.join(dict.fromkeys(kinds))}）在确认之后改过", "lines": []},
+        # 按这次实际变了的类别说（同导航栏的「对象有变化」）；插件节点的做法变了不是上游改了
+        changed = extra.get("changed") or list(node.get("stale_on") or [])
+        kinds = [workspace_labels.KIND_LABELS.get(str(kind), "上游内容") for kind in changed if kind != "definition"]
+        parts = (["做法有变化"] if "definition" in changed else []) + \
+            ([f"上游（{'、'.join(dict.fromkeys(kinds))}）在确认之后改过"] if kinds else [])
+        return {"upstream_diff": {"title": "，".join(parts) or "上游内容在确认之后改过", "lines": []},
                 "impact": {"expected_before": "已确认", "now": "过期", "action": f"重新执行「{node.get('title')}」",
                            "eta_ms": 0},
                 "siblings": 0}

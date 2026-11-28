@@ -380,6 +380,8 @@ def test_publish_gate_script_rerun_after_its_script_changes(env, fake_sandbox):
                                                         for a in nodes["naming.lint"]["actions"])
     assert (publish_gate()["status"], publish_gate()["blocking"]) == ("fail", True)
     _check, blockers = package_publish._blockers(manager, project_id, False)
+    stale = client.get(f"/api/v1/projects/{project_id}/inbox/stale:naming.lint").json()["detail"]
+    assert stale["upstream_diff"]["title"] == "做法有变化"  # 改的是插件，不是上游
     assert {"code": "flow:naming.lint", "message": "「命名格式检查（新叫法）」过期"} in blockers
 
     # 重跑：按新脚本记基线，放行

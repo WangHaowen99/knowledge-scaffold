@@ -283,7 +283,7 @@ def _node_items(root: Path, flow: dict) -> list[dict]:
         if info["state"] == "stale" and not handed_down(node, flow_nodes, state_of):
             items.append(_item("stale", node_id, f"「{node.get('title') or node_id}」过期了",
                                source="assistant",
-                               pack=pack, extra={"node": node},
+                               pack=pack, extra={"node": node, "changed": info.get("changed")},
                                fingerprint=node_state.fingerprint(root, list(node.get("stale_on") or []))))
         review = reviews.get(node_id)
         if review and review.get("source") == "autobuild":
