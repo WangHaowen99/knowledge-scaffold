@@ -1944,6 +1944,8 @@ Studio 管五元组本体条目（对象、操作、规则、指标、脚本）�
 - 条目：`label` 是按钮名（主命令叫节点名，和 FL-01 节点动作、建议条、对话气泡、排队条、执行记录同一个叫法）；`target` 是完整命令
   文本（`/ontology-research 追加`），前端发 S-20 时拆成 `command`、`text` 并带 `display_label`；`node_id` 是按钮所在的节点；
   `primary` 表示是这个节点的主命令；`command` 是命令名（`target` 的第一个词），界面不显示；`description` 恒为空串。
+- 脚本节点（`kind: script`，不是面板节点）同导航栏：主条目叫节点名、`kind: "node"`、`target` 和 `node_id` 是节点编号、`command` 为空串，
+  前端调 FL-05 在沙箱里跑；包另外声明的主命令不列（没声明命令的脚本步骤也列）。其余条目没有 `kind` 字段，照旧发 S-20。
 - 界面（节点模型重构 2b 前端）：输入框打「/」或点「全部命令」打开菜单，每次打开重取一次。分组、条目和响应一致，组名就是节点名，
   只显示按钮名（不显示 `description`、命令名和条数）。斜杠后面接着打字按 `label` 筛（不分大小写），↑↓ 选、回车执行、Esc 只关菜单；
   没有匹配时菜单收起，回车按原文发送。⌘K 用同一份数据、同一套筛法，叫法一样。执行发 `S-20`：`target` 拆成 `command`、`text`，
@@ -5316,6 +5318,7 @@ type CommandItem = {
   target: string;                 // 节点模型重构 2b：完整命令文本，如「/ontology-research 追加」
   pack: string; node_id: string;  // 按钮所在的节点
   primary: boolean;               // 节点模型重构 2b：是不是这个节点的主命令
+  kind?: "node";                  // 脚本节点的主条目：按 node_id 调 FL-05，不发 S-20
   args_schema: object | null;
   available: boolean; unavailable_reason: string | null;
 };

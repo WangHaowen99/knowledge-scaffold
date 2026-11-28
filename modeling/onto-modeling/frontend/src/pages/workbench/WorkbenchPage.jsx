@@ -620,6 +620,10 @@ export default function WorkbenchPage({ route }) {
   }, [running, ab.running, interrupt]);
 
   const fail = (e) => toast(errorText(e), 'alert');
+  // 「全部命令」：脚本步骤在沙箱里跑（FL-05），其余发到对话
+  const runCatalog = (body) => (body.node_id
+    ? submitOnce(() => api.startNode(pid, body.node_id, { conversation_id: cid, origin: body.origin })).catch(fail)
+    : sendCommand(body));
   // 决策卡草稿（question_id → 选了什么、写了什么）：问题失效后卡片只读留着这些内容
   const answerDrafts = useRef(new Map());
   const actions = useMemo(() => ({
@@ -876,7 +880,7 @@ export default function WorkbenchPage({ route }) {
                     lead={returnId ? <span className="s" onClick={() => enterPlugin(returnId)}><Icon name="puzzle" size={12} />回到插件开发</span> : null}
                   />
                 )}
-                <Composer pid={pid} cid={cid} apiRef={comp} st={st} buildMode={modeSw.mode} modeLabel={plugin ? '插件开发' : modeSw.label} modeBlocked={modeBlocked} onMode={onMode} onSend={send} onCommand={sendCommand} onStop={canInterrupt(running, ab) ? interrupt : null} plugin={plugin} />
+                <Composer pid={pid} cid={cid} apiRef={comp} st={st} buildMode={modeSw.mode} modeLabel={plugin ? '插件开发' : modeSw.label} modeBlocked={modeBlocked} onMode={onMode} onSend={send} onCommand={runCatalog} onStop={canInterrupt(running, ab) ? interrupt : null} plugin={plugin} />
               </div>
             </div>
             {drag ? <div className="wb-dropmask"><Icon name="upload" size={24} /><b>松开以添加附件</b><span className="xs muted">Markdown、Word、Excel、PDF、Drawio、TXT · 单个不超过 20 MB</span></div> : null}

@@ -194,6 +194,8 @@ export function commandFromTarget(target) {
 // 全部命令（S-18）的条目 → S-20 请求体：发条目的完整命令文本（target，「/ontology-research 追加」），带上按钮名；
 // 对话里的名字由服务端按名字表取。老响应没有 target 时发命令名
 export function catalogCommand(item) {
+  // 脚本步骤（S-18 kind node）同导航栏：由内核在沙箱里跑（FL-05），调用方按 node_id 走 startNode
+  if (item?.kind === 'node') return { node_id: item.node_id || item.target, display_label: item.label || '' };
   return { ...commandFromTarget(item?.target || item?.command), display_label: item?.label || '' };
 }
 

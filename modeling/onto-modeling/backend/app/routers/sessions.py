@@ -780,7 +780,17 @@ def _catalog_items(node: dict, hooks: list[dict], installed: set[str], probes, s
     buttons = [(action, action is primary) for action in node.get("actions") or [] if isinstance(action, dict)]
     buttons += [({"label": hook.get("title"), "command": hook.get("command")}, False) for hook in hooks]
     out = []
+    # 脚本节点同导航栏：主按钮叫节点名，由内核在沙箱里跑（FL-05），包另外声明的主命令不再列
+    script_run = node.get("kind") == "script" and not node.get("panel")
+    if script_run:
+        out.append({
+            "id": f"{node['id']}#run", "label": str(node.get("title") or node["id"]), "description": "", "kind": "node",
+            "command": "", "target": node["id"], "pack": node.get("pack") or "core", "node_id": node["id"],
+            "primary": True, "args_schema": None, "available": True, "unavailable_reason": None,
+        })
     for index, (action, is_primary) in enumerate(buttons):
+        if script_run and is_primary:
+            continue
         target = str(action.get("command") or "").strip()
         if not target.startswith("/") or target.split()[0] not in installed or target in seen:
             continue

@@ -440,3 +440,18 @@ def test_human_node_reanswered_after_stale_is_confirmed_again(env):
     assert nodes_of(root)["naming.signoff"]["state"] == "stale"
     answer_signoff()
     assert nodes_of(root)["naming.signoff"]["state"] == "confirmed"
+
+
+def test_script_step_is_listed_in_command_catalog_as_a_node_run(env):
+    """「全部命令」和 ⌘K（S-18）同导航栏：插件的脚本步骤列一项节点名，点了在沙箱里跑（FL-05）；没声明命令也列。"""
+    client, manager, project_id, tmp_path = env
+    gate = {**SCRIPT_NODE, "placement": "step", "after": "core.validate", "blocks": ["core.publish"]}
+    install(manager, tmp_path, flow=kinds_flow(gate, probes={"naming_lint": {"files": ["reports"], "glob": "lint-naming.md"}}),
+            files={"scripts/naming_lint.py": LINT_SCRIPT})
+    enable_and_apply(client, manager, project_id)
+    catalog = client.get(f"/api/v1/projects/{project_id}/commands/catalog").json()
+    items = [item for group in catalog["groups"] for item in group["items"]]
+    run = [item for item in items if item["node_id"] == "naming.lint"]
+    assert [(item["kind"], item["label"], item["target"], item["primary"]) for item in run] == \
+        [("node", "命名格式检查", "naming.lint", True)]
+    assert all("kind" not in item for item in items if item["node_id"] != "naming.lint")  # 斜杠命令条目不变

@@ -71,3 +71,9 @@ test('执行条目发它的完整命令文本（target）带上按钮名，和�
   const scene = flatItems(filterCatalog(catalog, '场景'))[0];
   assert.deepEqual(catalogCommand(scene), { command: '/ontology-trace', text: '全部', display_label: '场景模拟' });
 });
+
+test('脚本步骤（kind node）同导航栏：按节点 ID 跑，不发斜杠命令', () => {
+  const item = { id: 'pk.check#run', label: '检查对象主键', kind: 'node', command: '', target: 'pk.check', node_id: 'pk.check' };
+  assert.deepEqual(catalogCommand(item), { node_id: 'pk.check', display_label: '检查对象主键' });
+  assert.deepEqual(flatItems(filterCatalog({ groups: [{ id: 'g', label: '检查对象主键', items: [item] }] }, '主键')), [item]);
+});

@@ -72,7 +72,10 @@ export function CommandPalette({ projectId, inboxCount, extensions, conversation
     setOpen(false);
     if (it.command) {
       try {
-        await api.sendCommand(projectId, { ...catalogCommand(it.command), origin: { page: 'palette', label: '命令面板' }, conversation_id: conversationId || undefined });
+        const body = { ...catalogCommand(it.command), origin: { page: 'palette', label: '命令面板' }, conversation_id: conversationId || undefined };
+        await (body.node_id
+          ? api.startNode(projectId, body.node_id, { conversation_id: body.conversation_id, origin: body.origin })
+          : api.sendCommand(projectId, body));
         navigate(pagePath('wb-l2', projectId));
       } catch (e) {
         toast(errorText(e), 'alert');
