@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 
 from .storage import HubError, Store
 from .limits import UploadLimit
+from .maintenance import Maintenance, QueryMaintenance
 from .package_contract import PackageError
 
 DATA_DIR = Path(os.environ.get('HUB_DATA_DIR', '/data/knowledge-hub'))
@@ -23,11 +24,20 @@ store = Store(DATA_DIR,
 async def lifespan(app):
     with store.lock():
         store.recover_all()
-    yield
+    worker = Maintenance(store, float(os.environ.get('HUB_MAINTENANCE_INTERVAL_SECONDS', '60')))
+    app.state.hub_maintenance = worker
+    worker.start()
+    try:
+        yield
+    finally:
+        import asyncio
+        await asyncio.to_thread(worker.close)
+        app.state.hub_maintenance = None
 
 
 app = FastAPI(title='Knowledge Package Hub', version='0.1.0', lifespan=lifespan)
 app.add_middleware(UploadLimit, max_bytes=store.max_bytes + 1024**2)
+app.add_middleware(QueryMaintenance)
 
 
 def error_response(exc):

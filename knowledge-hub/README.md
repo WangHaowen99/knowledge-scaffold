@@ -26,6 +26,12 @@ python3 -m venv .venv
 
 建模服务通过 `ONTO_HUB_URL`、`ONTO_HUB_SERVICE_TOKEN` 访问 Hub，缺少统一服务身份时失败关闭。接入外部账号服务时同时设置 Hub 的可达地址及稳定 issuer 命名空间，不仅设置建模的认证地址。生产凭据由受控运行环境注入，不写入仓库。
 
+包列表和版本列表读取已提交记录，不等待后台恢复或存储写锁；可能暂时看不到正在恢复的新版本。
+包列表的 `latest_release_version` 与该条 `version` 相同，仅有快照时返回快照版本号。
+后台维护由查询响应后通知及周期任务触发，跨进程合并并使用原存储锁。可设置
+`HUB_MAINTENANCE_INTERVAL_SECONDS`（默认 60 秒，正数）控制周期和维护冷却间隔；
+存储锁忙时延后重试，启动恢复及其他接口检查保持原有行为。后台失败记录通用错误并在后续周期重试。
+
 ## 容器部署
 
 Hub 是独立 compose 项目（[`deploy/docker-compose.knowledge-hub.yml`](deploy/docker-compose.knowledge-hub.yml)，部署脚本 [`deploy/deploy.sh`](deploy/deploy.sh)；项目名与容器名均为 `knowledge-hub`，数据卷 `knowledge-hub_knowledge-hub-data`），与 onto-modeling 分开部署、升级和重建，不发布宿主端口。它加入与账号中心、onto-modeling 共享的 Docker 网络（整栈即 consumer 网络），onto-modeling 经 `http://knowledge-hub:8200` 访问。

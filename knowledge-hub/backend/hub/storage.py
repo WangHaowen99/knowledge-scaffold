@@ -85,10 +85,10 @@ class Store:
         self.pending_ttl = pending_ttl
 
     @contextmanager
-    def lock(self):
+    def lock(self, *, blocking=True):
         # Single writer also serializes backup and deletion against all mutations.
         with (self.root / '.lock').open('a') as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
+            fcntl.flock(f, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
             try:
                 yield
             finally:

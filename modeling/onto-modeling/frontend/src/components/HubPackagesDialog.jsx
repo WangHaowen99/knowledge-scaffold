@@ -2,6 +2,14 @@ import { useEffect, useState } from 'react';
 import { Alert, Button, Input, Modal, Space, Table, Typography, message } from 'antd';
 import { api } from '../lib/api.js';
 
+function formatCreatedAt(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  const pad = (part) => String(part).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 export default function HubPackagesDialog({ open, onClose, onImported }) {
   const [packages, setPackages] = useState({ items: [], total: 0 });
   const [versions, setVersions] = useState({ items: [], total: 0 });
@@ -62,14 +70,14 @@ export default function HubPackagesDialog({ open, onClose, onImported }) {
         pagination={{ current: packagePage, pageSize: 20, total: packages.total, showSizeChanger: false, onChange: setPackagePage }}
         columns={[
           { title: '知识包名称', dataIndex: 'name', width: '33%', ellipsis: true },
-          { title: '版本', dataIndex: 'version', width: '17%' },
+          { title: '最新版本', dataIndex: 'version', width: '17%' },
           { title: '知识包 ID', dataIndex: 'ontology_id', width: '50%', ellipsis: true },
         ]} />
       {selected && <Table size="small" rowKey="release_id" dataSource={versions.items}
         rowSelection={{ type: 'radio', selectedRowKeys: release ? [release.release_id] : [], onChange: (_, rows) => setRelease(rows[0]) }}
         pagination={{ current: versionPage, pageSize: 20, total: versions.total, showSizeChanger: false, onChange: setVersionPage }}
         columns={[{ title: '版本', dataIndex: 'version' }, { title: '来源', dataIndex: 'source_service' },
-          { title: '摘要', dataIndex: 'package_digest', ellipsis: true }]} />}
+          { title: '创建时间', dataIndex: 'created_at', render: formatCreatedAt }]} />}
       <Input aria-label="新建模项目名称" placeholder="新建模项目名称" value={name} maxLength={128} disabled={busy} onChange={(e) => setName(e.target.value)} />
     </Space>
   </Modal>;
