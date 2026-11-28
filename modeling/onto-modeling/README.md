@@ -602,8 +602,8 @@ ADR-0020 定下的三份契约随 Hub 与独立评测退役：包出（X-01 发�
 
 **升级迁移**（启动时一次性、幂等）：各项目 `.ontology-state/eval-data/` 里评测上传的数据表，凡有 Sheet
 被对象的数据绑定用到（声明或推断），复制进 `resource/excel/` 并在 `materials.json` 标为 `schema`，
-单独提交（只提交这些路径）；随后删除 `.ontology-state/` 下的评测数据（上传表、`eval.json`、求解验证用例）
-与项目元数据里的 Modeling 关联字段，最后删除数据目录下的评测数据源配置（`eval-data-sources/`，含连接密码）
+单独提交（只提交这些路径）；随后删除 `.ontology-state/` 下的评测上传表与项目元数据里的 Modeling 关联字段
+（`eval.json` 留着不读；旧求解验证用例保留，在求解页只读导出，见 API 契约 SV-05），最后删除数据目录下的评测数据源配置（`eval-data-sources/`，含连接密码）
 与 Modeling 清理队列。单个项目迁移失败只记运维错误日志，下次启动重试；数据源配置不等它，照删。
 
 升级后注意：

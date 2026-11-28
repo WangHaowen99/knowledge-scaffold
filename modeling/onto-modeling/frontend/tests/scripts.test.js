@@ -7,7 +7,7 @@ import {
   diffContracts, draftKey, setEnabled, setField, setOptionLabel, setTemplateParam, toManual, toPayload,
 } from '../src/lib/solver-contract-model.js';
 import {
-  SOLVER_TYPE, availableScriptsTab, candidateView, checkLines, contractChip, contractLocked, contractProblems, contractTitle, defaultPicked, defaultScript,
+  LEGACY_CASES_FILE, SOLVER_TYPE, availableScriptsTab, legacyCasesText, candidateView, checkLines, contractChip, contractLocked, contractProblems, contractTitle, defaultPicked, defaultScript,
   descriptorChip, draftOf, evaluatorCommand, evaluatorOptions, evaluatorTarget, familyOptions, fmtSecs, fmtStamp, generateCommand,
   lockText, modelOperation, moreItems, pickedOperations, removeUnit, revisionTag, rowAction, sandboxChip, sandboxView, savedToast,
   saveErrorView, saveState, scanCommand, scanLock, setUnit, templateCommand, toggleCapability, togglePicked, verificationView,
@@ -480,3 +480,12 @@ test('进行中任务的初始状态（?mock=task:scripts）', () => {
   assert.equal(t.step_label, '第 2 步 / 共 3 步');
   assert.deepEqual(lockScope.artifacts.map((a) => [a.type, a.key]), [[SOLVER_TYPE, 'restock_route']]);
 });
+
+// SV-05（同 develop）：旧验证用例按 {cases} 导出成 JSON 文件，没有用例时不下载
+test('旧验证用例导出', () => {
+  assert.equal(LEGACY_CASES_FILE, 'solver-validation-cases.json');
+  assert.equal(legacyCasesText([]), null);
+  assert.equal(legacyCasesText(undefined), null);
+  assert.deepEqual(JSON.parse(legacyCasesText([{ id: 'case_a' }])), { cases: [{ id: 'case_a' }] });
+});
+

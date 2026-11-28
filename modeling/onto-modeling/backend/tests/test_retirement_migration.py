@@ -98,7 +98,8 @@ def test_referenced_upload_moves_into_resource_and_state_is_purged(manager):
     assert not (root / ".ontology-state" / "eval-data").exists()
     # 最近一轮的状态留给「旧版评测记录」只读显示（ADR-0092）
     assert (root / ".ontology-state" / "eval.json").read_text(encoding="utf-8") == '{"status": "done"}'
-    assert not (root / ".ontology-state" / "solver-validation-cases.json").exists()
+    # 旧验证用例保留，求解页只读导出（SV-05，同 develop）
+    assert (root / ".ontology-state" / "solver-validation-cases.json").read_text(encoding="utf-8") == "[]"
     assert (root / ".ontology-state" / "solver-validations.json").exists()  # 回执门禁记录保留
     assert not config_file.parent.exists() and not (manager.data_dir / "modeling-cleanup-tasks.json").exists()
     assert not set(eval_retirement.LEGACY_META_FIELDS) & set(manager.get_project(pid))

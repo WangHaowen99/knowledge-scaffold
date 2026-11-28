@@ -1,6 +1,7 @@
 """求解契约（API 契约 3.18）：SV-01 读取、SV-02 保存、SV-03 检查（不落盘）。
 
-端到端验证在发布后的独立评测里做（ADR-0098），SV-04 验证回执与 X-04 已退役。
+端到端验证在发布后的独立评测里做（ADR-0098），SV-04 验证回执与 X-04 已退役；SV-05 只读导出建模侧
+原有的验证用例，供导入独立评测的求解验证集（同 develop）。
 """
 
 from __future__ import annotations
@@ -154,3 +155,11 @@ async def check_contract(project_id: str, request: Request):
         "rendered": result["rendered"],
         "evaluator": result["evaluator"],
     }
+
+
+@router.get("/validation-cases")
+def get_validation_cases(project_id: str, request: Request):
+    """SV-05：只读导出建模侧原有的验证用例（不再维护），没有时为空列表。"""
+    root = deps.require_owner(project_id, request)
+    return {"cases": solver.legacy_validation_cases(root)}
+

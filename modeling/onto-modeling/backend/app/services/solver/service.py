@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -205,3 +206,18 @@ def ensure_publishable(source_root: Path, state_root: Path | None = None) -> Non
             "求解契约未通过发布检查：" + "；".join(item["message"] for item in blocking[:3]),
             code=blocking[0]["code"],
         )
+
+
+# 建模侧原有的验证用例（develop !640）：已停止维护，只读导出，供导入独立评测的求解验证集
+LEGACY_CASES_FILE = ".ontology-state/solver-validation-cases.json"
+
+
+def legacy_validation_cases(root) -> list[dict]:
+    """读出旧验证用例；文件不存在、坏了或结构不对时返回空列表，只保留对象形态的条目。"""
+    try:
+        data = json.loads((Path(root) / LEGACY_CASES_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    cases = data.get("cases") if isinstance(data, dict) else None
+    return [item for item in cases or [] if isinstance(item, dict)]
+

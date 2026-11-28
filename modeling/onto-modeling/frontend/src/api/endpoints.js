@@ -257,6 +257,7 @@ export function createApi(client) {
     solverContract: (id) => client.get(`${P(id)}/solver/contract`), // SV-01
     saveSolverContract: (id, body) => client.put(`${P(id)}/solver/contract`, body), // SV-02
     checkSolverContract: (id, body) => client.post(`${P(id)}/solver/contract/check`, body), // SV-03
+    solverValidationCases: (id) => client.get(`${P(id)}/solver/validation-cases`), // SV-05
     deterministicContract: (id) => client.get(`${P(id)}/deterministic/contract`),
     deterministicCandidates: (id) => client.get(`${P(id)}/deterministic/candidates`),
     createDeterministicDraft: (id, body) => client.post(`${P(id)}/deterministic/candidates/draft`, body),

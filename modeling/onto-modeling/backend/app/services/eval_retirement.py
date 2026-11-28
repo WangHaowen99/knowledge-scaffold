@@ -6,7 +6,7 @@
 1. **迁表**：``.ontology-state/eval-data/<文件ID>/`` 下的上传表，凡有 Sheet 被对象的数据绑定
    用到（「# 数据来源」声明或按列推断），复制进 ``resource/excel/``，在 materials.json 标为
    schema，只提交这些路径；
-2. **清状态**：删掉 .ontology-state 下的评测数据（eval-data/、solver-validation-cases.json），以及项目元数据里的
+2. **清状态**：删掉 .ontology-state 下的评测上传表（eval-data/），以及项目元数据里的
    Modeling 关联字段。最近一轮的状态 eval.json 留着，「旧版评测记录」只读显示它（ADR-0092）。
 
 全部项目处理完，删掉数据目录下的评测数据源配置（eval-data-sources/，含连接密码）与 Modeling
@@ -33,7 +33,6 @@ logger = logging.getLogger(__name__)
 LEGACY_UPLOAD_DIR = (".ontology-state", "eval-data")
 LEGACY_STATE_PATHS = (
     ".ontology-state/eval-data",
-    ".ontology-state/solver-validation-cases.json",
 )
 LEGACY_DATA_PATHS = ("eval-data-sources", "modeling-cleanup-tasks.json")
 LEGACY_META_FIELDS = ("modeling_project_id", "modeling_package_digest", "modeling_package_revision")

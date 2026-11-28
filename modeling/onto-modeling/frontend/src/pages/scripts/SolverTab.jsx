@@ -17,9 +17,9 @@ import {
 import { ScopeLockBar } from '../plugin/parts.jsx';
 import { SolverValidationCard } from '../evaluation/SolverValidationCard.jsx';
 import {
-  SIDECAR_FILES, baseOperations, checkLines, contractLocked, contractProblems, contractTitle, draftOf, evaluatorCommand,
+  LEGACY_CASES_FILE, SIDECAR_FILES, baseOperations, checkLines, contractLocked, contractProblems, contractTitle, draftOf, evaluatorCommand,
   evaluatorOptions, evaluatorTarget, familyOptions, fieldProblem, itemKey, lockText, removeUnit, revisionTag, saveErrorView,
-  saveState, savedToast, setUnit, templateCommand, toggleCapability,
+  legacyCasesText, saveState, savedToast, setUnit, templateCommand, toggleCapability,
 } from './scriptsModel.js';
 
 const Err = ({ p }) => (p ? <span style={{ color: p.severity === 'warning' ? 'var(--amber)' : 'var(--red)' }}>{p.message}</span> : null);
@@ -87,6 +87,20 @@ function Capabilities({ item, families, onChange }) {
 export default function SolverTab({ view, lock, tasks, onSaved, reload }) {
   const { api } = useApp();
   const { pid, reloadScope } = useProject();
+  // 导出建模侧原有的验证用例（SV-05，同 develop）：给评测页面的求解验证集导入用
+  const exportLegacyCases = async () => {
+    const { cases } = await api.solverValidationCases(pid);
+    const text = legacyCasesText(cases);
+    if (!text) {
+      toast('建模侧没有保存过验证用例', 'info');
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    a.download = LEGACY_CASES_FILE;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
   const [base, setBase] = useState(null);
   const [items, setItems] = useState([]);
   const [selUid, setSelUid] = useState(null);
@@ -349,7 +363,7 @@ export default function SolverTab({ view, lock, tasks, onSaved, reload }) {
           </Card>
           <SolverValidationCard
             pid={pid} revision={base.revision} dirty={dirty} show={!!base.enabled}
-            onExportCases={async () => toast('建模侧没有保存过验证用例', 'info')}
+            onExportCases={exportLegacyCases}
           />
           <Card title="其他求解契约" icon="list">
             {others.map((it) => (

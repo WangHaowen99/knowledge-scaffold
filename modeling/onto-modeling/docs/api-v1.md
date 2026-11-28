@@ -2904,6 +2904,13 @@ ADR-0098：端到端验证在发布后的独立评测里做，onto 不再收回�
 旧路径 `GET /api/projects/{id}/package/solver-validations/latest` 回 `410 endpoint_removed`。`SV-01` 的响应去掉
 `gate`、`receipt`，改带 `requires_validation_after_publish: bool`（启用了需要验证的求解契约时为 true，发布时要确认）。
 
+#### SV-05 旧验证用例导出
+
+`GET /api/v1/projects/{id}/solver/validation-cases` · 所有者 · 旧：`GET /api/projects/{id}/package/solver-validations/cases` · 审计：否 · 依据：develop !640 · 页面：scripts（求解验证卡「导出验证用例（JSON）」）
+
+- 只读导出建模侧原有的验证用例（`.ontology-state/solver-validation-cases.json`，已停止维护），供导入独立评测的求解验证集。
+- 响应：`{cases: object[]}`；文件不存在、损坏或结构不对时 `cases` 为空，只保留对象形态的条目。界面为空时提示「建模侧没有保存过验证用例」，不下载。
+
 ---
 
 ### 3.19 证据源
@@ -4729,7 +4736,7 @@ AuditEntry = {at, actor, action, description}
 | `versions` | 版本历史与对比 | `V-01`～`V-08`、`F-06`、`F-03` | EP-05 |
 | `scenarios` | 场景模拟（插件） | `AR-01`、`AR-02`、`AR-03`、`AR-04`、`AR-05`、`AR-06`、`AR-07`、`AR-09`（类型 `trace.scenario`、`trace.mock`）、`S-20`（场景模拟、交互模拟、补齐过期场景、按场景补生成、行内 ▶）、`S-19`、`CS-06`、`IN-01`（`pack=trace` 角标）、`PL-12` | EP-03、EP-06、EP-10 |
 | `knowledge` | 知识沉淀（插件，已删除，ADR-0101） | — | — |
-| `scripts` | 代码生成与求解（插件） | `SC-01`、`SC-02`、`SC-03`、`SV-01`～`SV-03`、`ST-04`（脚本只读预览）、`S-20`（扫描、生成脚本、修复、重新生成、按模板重新生成）、`S-19`、`CS-06` | EP-03、EP-06、EP-10 |
+| `scripts` | 代码生成与求解（插件） | `SC-01`、`SC-02`、`SC-03`、`SV-01`～`SV-03`、`SV-05`、`ST-04`（脚本只读预览）、`S-20`（扫描、生成脚本、修复、重新生成、按模板重新生成）、`S-19`、`CS-06` | EP-03、EP-06、EP-10 |
 | `proj-settings` | 项目设置 | `P-04`、`P-05`、`P-06`、`P-07`、`P-12`、`P-13`、`P-14`、`C-06`、`A-09`、`AB-01`、`AB-02`、`AB-03`、`AB-18`、`BP-01`（范围里的分段清单）、`PL-05`～`PL-11`、`M-01`～`M-04` | EP-08、EP-20 |
 | `plugins` | 插件中心 | `PL-01`、`PL-03`、`PL-06`、`PL-07` | EU-01 |
 | `plugin-detail` | 插件详情 | `PL-02`、`PL-03`、`PL-07`、`PL-09`、`PL-05` | — |
@@ -4785,7 +4792,8 @@ AuditEntry = {at, actor, action, description}
 | `PUT /api/projects/{id}/package/solver-contract` | `SV-02` | 改写；`baseRevision` 改为 `base_revision` |
 | `POST /api/projects/{id}/package/solver-contract/check` | `SV-03` | 改写 |
 | `GET /api/projects/{id}/package/solver-validations/latest` | —（SV-04 退役，ADR-0098） | 删除 |
-| `GET/PUT /api/projects/{id}/package/solver-validations/cases` | — | 删除（第 11 章、14#2） |
+| `GET /api/projects/{id}/package/solver-validations/cases` | `SV-05` | 改写（只读导出，同 develop） |
+| `PUT /api/projects/{id}/package/solver-validations/cases` | — | 删除（第 11 章、14#2） |
 | `POST /api/projects/{id}/package/solver-validations` | —（求解验证在评测服务里做，ADR-0098） | 删除 |
 | `POST /api/projects/{id}/objects/{key}/data-source` | `PB-02` | 改写；方法改 PUT |
 | `GET /api/projects/{id}/files` | `F-01` | 改写；去掉写副作用 |

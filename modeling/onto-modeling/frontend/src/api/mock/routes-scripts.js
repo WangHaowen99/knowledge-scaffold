@@ -188,6 +188,7 @@ export function register(ctx) {
 
   // ---------- SV-01 ～ SV-03 ----------
   on('GET', '/projects/([^/]+)/solver/contract', ({ m }) => json(200, view(m[1])));
+  on('GET', '/projects/([^/]+)/solver/validation-cases', () => json(200, { cases: [] })); // SV-05：示例项目没有旧用例
 
   const operationsOf = (body) => (body && typeof body.contract === 'object' && body.contract ? body.contract.operations : undefined);
   on('POST', '/projects/([^/]+)/solver/contract/check', ({ m, body }) => {

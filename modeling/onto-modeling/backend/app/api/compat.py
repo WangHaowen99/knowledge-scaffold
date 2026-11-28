@@ -157,7 +157,7 @@ RULES: tuple[Rule, ...] = (
     _r("PUT", f"{_PROJ}/package/solver-contract", _same("PUT", f"{_V1}/solver/contract")),
     _r("POST", f"{_PROJ}/package/solver-contract/check", _same("POST", f"{_V1}/solver/contract/check")),
     _gone("GET", f"{_PROJ}/package/solver-validations/latest"),
-    _gone("GET", f"{_PROJ}/package/solver-validations/cases"),
+    _r("GET", f"{_PROJ}/package/solver-validations/cases", _same("GET", f"{_V1}/solver/validation-cases")),
     _gone("PUT", f"{_PROJ}/package/solver-validations/cases"),
     _gone("POST", f"{_PROJ}/package/solver-validations"),
     _r("POST", f"{_PROJ}/objects/(?P<key>[^/]+)/data-source", _same("PUT", f"{_V1}/objects/{{key}}/data-source")),

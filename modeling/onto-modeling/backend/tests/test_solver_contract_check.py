@@ -1412,3 +1412,20 @@ def test_contract_api_leaves_empty_template_texts_null(manager: WorkspaceManager
     operation = TestClient(app).get(f"/api/v1/projects/{pid}/solver/contract").json()["operations"][0]
     assert operation["option_labels"] is None and operation["result_title"] is None and operation["result_texts"] is None
     assert operation["evaluator"] == {"path": "ontology/scripts/route_eval.py", "kind": "script"}
+
+
+def test_legacy_validation_cases_export_read_only(manager: WorkspaceManager, monkeypatch):
+    """SV-05（同 develop）：建模侧不再执行验证，原有用例只读导出，旧路径改写到它。"""
+    client = _v1_client(manager, monkeypatch)
+    pid, root = _project(manager)
+    url = f"/api/v1/projects/{pid}/solver/validation-cases"
+    assert client.get(url).json() == {"cases": []}
+    cases_path = root / ".ontology-state" / "solver-validation-cases.json"
+    cases_path.parent.mkdir(parents=True, exist_ok=True)
+    cases_path.write_text(json.dumps({"cases": [{"id": "case_a"}, "broken"]}), encoding="utf-8")
+    assert client.get(url).json() == {"cases": [{"id": "case_a"}]}
+    legacy = client.get(f"/api/projects/{pid}/package/solver-validations/cases")
+    assert legacy.status_code == 200 and legacy.json() == {"cases": [{"id": "case_a"}]}
+    cases_path.write_text("{", encoding="utf-8")
+    assert client.get(url).json() == {"cases": []}
+

@@ -356,3 +356,11 @@ export function toggleCapability(current = [], cap) {
 
 // 模板参数（只读预览五份附属文件用）
 export const templateParams = (item) => normalizeParams(item?.params);
+
+// 旧验证用例导出（SV-05，同 develop）：没有用例时返回 null，由页面提示「建模侧没有保存过验证用例」
+export const LEGACY_CASES_FILE = 'solver-validation-cases.json';
+export function legacyCasesText(cases) {
+  const items = Array.isArray(cases) ? cases : [];
+  return items.length ? `${JSON.stringify({ cases: items }, null, 2)}\n` : null;
+}
+

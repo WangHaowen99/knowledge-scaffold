@@ -6,6 +6,7 @@
 from .service import (  # noqa: F401
     check_solver_contract_draft,
     ensure_publishable,
+    legacy_validation_cases,
     release_status_at,
     save_solver_contract,
     solver_check,

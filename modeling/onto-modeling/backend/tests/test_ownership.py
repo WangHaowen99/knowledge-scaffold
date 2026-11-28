@@ -101,6 +101,7 @@ CONTENT_REQUESTS = [
     ("get", "/studio/graph", None),
     ("get", "/knowledge", None),
     ("get", "/solver/contract", None),
+    ("get", "/solver/validation-cases", None),
     ("get", "/releases", None),
     ("get", "/engine", None),
     ("get", "/usage", None),
