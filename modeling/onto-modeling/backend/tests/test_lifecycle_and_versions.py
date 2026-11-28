@@ -376,7 +376,7 @@ def test_export_writes_relation_declared_in_both_endpoint_files_once(
     )
     dest = tmp_path / "relations.zip"
 
-    manager.export_package_zip(pid, dest, binding, graph=graph)
+    publish_service.export_package_zip(manager, pid, dest, binding, graph=graph)
 
     with zipfile.ZipFile(dest) as archive:
         order = archive.read(f"{pid}/objects/订单.md").decode("utf-8")

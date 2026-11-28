@@ -136,39 +136,21 @@ def test_iteration_entries_expose_revert_permission(hub):
     assert all(item['can_revert'] is False for item in result['items'])
 
 
-@pytest.mark.parametrize('username, can_tag, tag_status', [
-    ('owner_a', True, 200),
-    ('editor_b', True, 200),
-    ('viewer_c', False, 403),
-])
-def test_tag_entry_follows_write_permission(tmp_path, monkeypatch, username, can_tag, tag_status):
-    """只读评审在历史页看不到标记入口，与标记接口的写权限校验一致。"""
+def test_tag_entry_follows_write_permission(tmp_path, monkeypatch):
+    """develop !647：历史条目带 can_tag，与标记接口的写权限一致。本分支项目只有所有者能看历史、能标记，
+    所以历史里恒为 true；非所有者读历史、打标记都被拒（见 test_ownership）。"""
     manager = WorkspaceManager(tmp_path / 'modeling', tmp_path / 'assets')
     monkeypatch.setattr(config, 'DATA_DIR', tmp_path / 'modeling')
-    monkeypatch.setattr(projects, 'workspaces', manager)
+    monkeypatch.setattr(deps, 'workspaces', manager)
     monkeypatch.setattr(auth, 'ENABLED', False)
-    pid = manager.create_project('project_alpha', owner='owner_a')['id']
-    manager._update_meta(pid, members={'editor_b': 'editor', 'viewer_c': 'viewer'})
+    monkeypatch.setattr(config, 'BACKUP_INTERVAL_HOURS', 0)
+    pid = manager.create_project('project_alpha')['id']
     manager.write_file(pid, 'notes.md', 'synthetic content')
-    app = FastAPI()
-
-    @app.middleware('http')
-    async def identity_middleware(request, call_next):
-        request.state.user = {'sub': username}
-        return await call_next(request)
-    app.include_router(projects.router)
-
-    @app.exception_handler(WorkspaceError)
-    async def error(request, exc):
-        return JSONResponse({'error': str(exc)}, status_code=exc.status)
     with TestClient(app) as client:
-        history = client.get(f'/api/projects/{pid}/history').json()['items']
-        versions = client.get(f'/api/projects/{pid}/versions').json()['versions']
-        assert history and versions
-        assert all(item['can_tag'] is can_tag for item in history + versions)
-        tagged = client.post(f'/api/projects/{pid}/versions/tag',
-                             json={'commit': versions[0]['commit'], 'label': 'synthetic label'})
-        assert tagged.status_code == tag_status
+        history = client.get(f'/api/v1/projects/{pid}/history').json()['items']
+        assert history and all(item['can_tag'] is True for item in history)
+        tagged = client.post(f'/api/v1/projects/{pid}/versions/tags', json={'commit': history[0]['commit'], 'label': '合成标记'})
+        assert tagged.status_code == 201
 
 
 @pytest.mark.parametrize('cursor', ['x', '1', '1:', '-1:0', '1:2:3', '1:on'])

@@ -175,13 +175,14 @@ def test_wide_object_publish_checks_follow_environment(manager, monkeypatch, tmp
     pid = _plain(manager, lambda root: (root / 'ontology/object/Item.md').write_text(
         _object(_rows(116)), encoding='utf-8'))
     root = manager.project_root(pid)
+    _commit(root)  # 发布检查读提交导出的只读树
     binding = package_mapping.resolve_object_tables(root, strict_declared=False)
     folder = tmp_path / 'publication'
     value, _digest = hub_packages.freeze(manager, pid, folder, True, binding=binding)
-    assert manager.package_binding_check(pid)['structure']['blocking'] == 0
+    assert publish_service.package_binding_check(manager, pid)['structure']['blocking'] == 0
     hub_packages.ensure_importable(manager, pid, folder, value, True, False)
     monkeypatch.setenv('ENTITY_ATTRIBUTE_MAX_COUNT', '100')
-    assert 'package_limit_exceeded' in _codes(manager.package_binding_check(pid)['structure']['findings'])
+    assert 'package_limit_exceeded' in _codes(publish_service.package_binding_check(manager, pid)['structure']['findings'])
     with pytest.raises(hub_packages.WorkspaceError, match='116 / 100') as caught:
         hub_packages.ensure_importable(manager, pid, folder, value, True, False)
     assert caught.value.code == 'package_structure_invalid'

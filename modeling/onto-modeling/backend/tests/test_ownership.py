@@ -102,6 +102,8 @@ CONTENT_REQUESTS = [
     ("get", "/knowledge", None),
     ("get", "/solver/contract", None),
     ("get", "/solver/validation-cases", None),
+    ("get", "/history", None),
+    ("post", "/versions/tags", {"commit": "0" * 40, "label": "合成标记"}),
     ("get", "/releases", None),
     ("get", "/engine", None),
     ("get", "/usage", None),
