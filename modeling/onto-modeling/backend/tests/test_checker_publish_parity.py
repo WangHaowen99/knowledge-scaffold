@@ -20,7 +20,8 @@ from tests.test_publish_binding_gate import commit_all, manager, write_schema  #
 pytest.importorskip("openpyxl")
 
 SCRIPTS = Path(config.ASSETS_DIR) / "workspace-toolkit" / "scripts"
-PARITY_CATEGORIES = {"命名约束", "容量上限", "字段名称冲突"}
+# 容量上限不在对照里：检查器按 develop（!639）只报警告，发布侧仍按 consumer 导入规则拦（见 test_capacity_is_blocked_by_publish_only）
+PARITY_CATEGORIES = {"命名约束", "字段名称冲突"}
 
 OBJECT = """# 对象描述
 合成订单。
@@ -84,12 +85,6 @@ def operation_doc(inputs=("订单号",)) -> str:
     return OPERATION.format(inputs="".join(f"| {name} | 合成参数 |\n" for name in inputs))
 
 
-def padded_operation(chars: int) -> str:
-    """原文正好 chars 个字符的操作文档。"""
-    base = operation_doc()
-    return base + "读" * (chars - len(base) - 1) + "\n"
-
-
 def clean():
     return {"订单": object_doc(CLEAN_FIELDS)}, {"查询订单": operation_doc()}
 
@@ -109,22 +104,6 @@ def many_objects(count):
     return build
 
 
-def many_operations(count, inputs=("订单号",)):
-    def build():
-        objects, _ = clean()
-        return objects, {f"操作{i:03d}": operation_doc(inputs) for i in range(count)}
-    return build
-
-
-def with_operation(text):
-    def build():
-        objects, _ = clean()
-        return objects, {"查询订单": text}
-    return build
-
-
-LONG_INPUTS = tuple(f"很长很长的输入参数名称第{j:02d}号" for j in range(12))
-
 # (场景, 写法, 检查器的错误类别, 发布检查的拦截原因片段)
 BLOCKED = [
     ("英文名称重复（未绑表）",
@@ -139,15 +118,6 @@ BLOCKED = [
     ("属性清单不是一级标题：导出时原表照发",
      with_object(object_doc(numbered_fields(3, unnamed=1), source="无", heading="##")),
      "命名约束", "存在未填写字段 key 的字段定义"),
-    ("对象 101 个：对象目录也按属性上限查", many_objects(101),
-     "容量上限", "index.md: 单实体属性数量超过上限: 101 / 100"),
-    ("操作 101 个", many_operations(101), "容量上限", "单本体流程数量已达上限: 101 / 100"),
-    ("70 个操作的目录超过 15000 字符", many_operations(70, LONG_INPUTS),
-     "容量上限", "index.md: 单个逻辑长度超过上限"),
-    ("操作原文不到 15000 字符、加上发布补的文件头超过", with_operation(padded_operation(14990)),
-     "容量上限", "查询订单.md: 单个逻辑长度超过上限"),
-    ("单个对象 101 个属性", with_object(object_doc(numbered_fields(101), source="无")),
-     "容量上限", "订单.md: 单实体属性数量超过上限: 101 / 100"),
 ]
 
 # 发布不拦的写法：检查器也不能报这几类错误
@@ -156,11 +126,6 @@ PASSED = [
      with_object(object_doc([("订单号", "ORDER_ID", "是"), ("备注", "", "否")], source="无"))),
     ("部分英文名称为空（绑表）：导出丢掉这一行",
      with_object(object_doc([*CLEAN_FIELDS, ("备注", "", "否")]))),
-    ("对象正好 100 个", many_objects(100)),
-    ("102 行属性、2 行没填英文名称：发布包里 100 个",
-     with_object(object_doc(numbered_fields(102, unnamed=2), source="无"))),
-    ("操作正好 100 个", many_operations(100)),
-    ("操作发布后不到 15000 字符", with_operation(padded_operation(14900))),
 ]
 
 
@@ -217,6 +182,16 @@ def test_publish_passes_and_checker_stays_quiet(manager, checker, build):
     pid, root = _project(manager, build)
     assert _structure(manager, pid) == {"status": "pass", "messages": []}
     assert [issue for issue in checker(root) if issue["category"] in PARITY_CATEGORIES] == []
+
+
+def test_capacity_is_blocked_by_publish_only(manager, checker):
+    """develop 口径（!639）：consumer 把对象目录 objects/index.md 也按单个对象的属性上限（默认 300）查，
+    301 个对象发布就拦；检查器按对象数上限（默认 1000）只报警告，这里不报错——由发布就绪在校验时交给助手修（ADR-0103）。"""
+    pid, root = _project(manager, many_objects(301))
+    structure = _structure(manager, pid)
+    assert structure["status"] == "fail"
+    assert any("index.md: 单实体属性数量超过上限: 301 / 300" in message for message in structure["messages"]), structure
+    assert [issue for issue in checker(root) if issue["category"] == "容量上限"] == []
 
 
 def test_merge_gate_checks_script_contract(tmp_path):

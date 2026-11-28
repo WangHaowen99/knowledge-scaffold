@@ -340,8 +340,8 @@ def test_valid_keys_pass(checker, tmp_path: Path):
 
 # --- 7. consumer 容量上限 ---
 
-def test_consumer_limits_are_errors(checker, tmp_path: Path):
-    """超出容量上限时发布被拒，检查器报错误（与发布结果的对照见 test_checker_publish_parity）。"""
+def test_consumer_limits_warn(checker, tmp_path: Path):
+    """容量上限按 develop（!639）只报警告；发布侧仍按 consumer 导入规则拦，校验时由发布就绪交给助手修（ADR-0103）。"""
     ontology = tmp_path / "ontology"
     row = "| 属性{0} | field_{0} | 示例 | {1} | 字符串 | 无 | 无 |"
     count = checker.CONSUMER_ATTRIBUTE_MAX + 1
@@ -352,7 +352,7 @@ def test_consumer_limits_are_errors(checker, tmp_path: Path):
         write_operation(ontology, f"操作{i}")
 
     found = issues(checker, ontology, "容量上限")
-    assert all(i["severity"] == "错误" for i in found)
+    assert all(i["severity"] == "警告" for i in found)
     assert sorted(i["file"] for i in found) == ["object/宽对象.md", "operation/", "operation/长操作.md"]
 
 
