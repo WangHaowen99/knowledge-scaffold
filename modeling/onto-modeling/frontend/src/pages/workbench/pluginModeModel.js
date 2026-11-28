@@ -31,13 +31,15 @@ export function pickConversation(items, { preferredId, liveId, preferAutobuild }
 }
 
 /**
- * 模式菜单选「插件开发」：这条对话在跑、排队，或自主构建在跑时不切；否则进最近一条插件对话，没有就新建。
+ * 模式菜单选「插件开发」：这条对话在跑、排队，或自主构建在跑时不切；否则进引擎正绑着、没停下的那条插件对话
+ * （在跑或在等你回答，不然切回来找不到它），再是最近一条，没有就新建。
  * @returns {{action: 'busy', reason: 'session'|'autobuild'} | {action: 'open', id: string} | {action: 'create'}}
  */
 export function planEnterPlugin({ items, sessionState, autobuildRunning }) {
   if (autobuildRunning) return { action: 'busy', reason: 'autobuild' };
   if (BUSY.includes(sessionState)) return { action: 'busy', reason: 'session' };
-  const c = latestConversation(items, isPluginConv);
+  const c = (items || []).find((x) => isPluginConv(x) && x.live && x.state && x.state !== 'idle')
+    || latestConversation(items, isPluginConv);
   return c ? { action: 'open', id: c.id } : { action: 'create' };
 }
 
@@ -49,6 +51,24 @@ export function planLeavePlugin({ items, sessionState }) {
 }
 
 export const BUSY_TEXT = { session: '这一轮跑完再切', autobuild: '自主构建在跑，停下后再切' };
+
+/**
+ * 模式菜单里现在切不过去的项和原因（同 planEnterPlugin、planLeavePlugin 的判断），点之前就看得出来。
+ * @returns {{L2: string|null, L4: string|null, plugin: string|null}}
+ */
+export function modeMenuBlocked({ plugin, sessionState, autobuildRunning }) {
+  const busy = BUSY.includes(sessionState) ? BUSY_TEXT.session : null;
+  if (plugin) return { L2: busy, L4: busy, plugin: null };
+  return { L2: null, L4: null, plugin: autobuildRunning ? BUSY_TEXT.autobuild : busy };
+}
+
+/** 发消息被 409 session_busy 挡下、在跑的是另一条对话：说是哪一条，好去那里停下 */
+export function busyElsewhereText(error, items, cid) {
+  const other = error?.code === 'session_busy' ? error.details?.running_conversation_id : null;
+  if (!other || other === cid) return null;
+  const title = (items || []).find((c) => c.id === other)?.title;
+  return title ? `「${title}」在运行，停下后再发` : null;
+}
 
 /** 会话切换菜单：插件对话里只列插件对话，建模对话里不列插件对话 */
 export const menuConversations = (items, plugin) => (items || []).filter((c) => isPluginConv(c) === !!plugin);

@@ -269,6 +269,8 @@ class Turn:
     turn_id: str
     title: str = "工作过程"
     started: float = field(default_factory=time.time)
+    # 用时按单调时钟算：墙上时钟会被校时往回拨，算出过负数（「-8 秒」）
+    started_mono: float = field(default_factory=time.monotonic)
     group_revision: int = 0
     steps: list = field(default_factory=list)
     hidden_steps: int = 0
@@ -312,7 +314,7 @@ class Turn:
         record = self.progress_record()
         self.segment += 1
         self.steps, self.hidden_steps, self.group_revision = [], 0, 0
-        self.started, self.state = time.time(), "running"
+        self.started, self.started_mono, self.state = time.time(), time.monotonic(), "running"
         return record
 
     def add_step(self, key: str | None, text: str, state: str = "running") -> None:
@@ -355,7 +357,7 @@ class Turn:
             "interrupted": f"已打断 · 完成了 {done} 步",
             "waiting": f"等你回答 · 已完成 {done} 步",
         }.get(self.state, "")
-        duration = None if running else int((time.time() - self.started) * 1000)
+        duration = None if running else max(0, int((time.monotonic() - self.started_mono) * 1000))
         return {
             "group_id": self.group_id,
             "title": self.title,

@@ -288,6 +288,8 @@ def purge_history(project_id: str) -> None:
 # 超时即硬终止引擎（续接点保留，下一条消息 resume）——保证"停止"按钮总能停
 INTERRUPT_TIMEOUT_SECONDS = 10
 KILL_TIMEOUT_SECONDS = 5
+# 在别的对话里发消息时，引擎绑着的那条只是在等你回答：它的问题按这个理由撤回（release_waiting）
+RELEASE_REASON = "已转到别的对话"
 # 判定执行超时时 session_error 带的 reason，前端据此把这一轮没收尾的子任务卡显示成「执行超时」
 STALL_TIMEOUT_REASON = "stall_timeout"
 # 停机时回收全部引擎的总时长上限。docker 停机宽限期 30 秒，uvicorn 先等连接关闭最多
@@ -500,6 +502,11 @@ class Session:
 
     def is_connecting(self) -> bool:
         return self.connect_task is not None and not self.connect_task.done()
+
+
+def _waiting_only(session: "Session") -> bool:
+    return (bool(session.pending_permissions) and not session.is_connecting() and session.sending == 0
+            and session.state != "queued")
 
 
 def _recyclable(session: "Session") -> bool:
@@ -810,6 +817,29 @@ class SessionManager:
             "busy": _busy(session),
             "waiting": bool(session.pending_permissions),
         }
+
+    def waiting_only(self, project_id: str) -> bool:
+        """引擎绑着的对话只是在等你回答（决策卡、确认卡），没有在连接、排队或处理中的发送。"""
+        session = self._sessions.get(project_id)
+        return session is not None and _waiting_only(session)
+
+    async def release_waiting(self, project_id: str, conversation_id: str | None) -> bool:
+        """要在另一条对话里用引擎，而引擎绑着的那条只是在等你回答：问题按 RELEASE_REASON 撤回、这一轮停下（记为打断，
+        那条对话里可以从打断处继续），让出引擎。一张没人答的卡不该占住整个项目（同 take_over，先作答再打断）。
+        返回是否让出了；不需要让（没绑、绑的就是这条、在真跑）时 False。"""
+        session = self._sessions.get(project_id)
+        if session is None or not _waiting_only(session):
+            return False
+        if session.conversation_id == self.resolve_conversation(project_id, conversation_id):
+            return False
+        for request in list(session.pending_permissions.values()):
+            if not request.future.done():
+                request.future.set_result({"behavior": "deny", "message": RELEASE_REASON})
+        await self.interrupt(project_id, session.conversation_id)
+        deadline = time.monotonic() + INTERRUPT_TIMEOUT_SECONDS
+        while _busy(session) and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        return not _busy(session)
 
     async def take_over(self, project_id: str, reason: str) -> dict:
         """自主构建要开始而引擎正忙：没回答的问题按 reason 撤回、这一轮打断，等它停下。

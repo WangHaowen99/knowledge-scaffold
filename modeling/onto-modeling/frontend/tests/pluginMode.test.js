@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   canEditFile, cardDiffRows, defaultFile, diffRows, draftCardHead, draftCardMode, draftVersion, fixMessage, groupFiles, isDraftCard, knowledgeTags,
-  latestDraftCards, menuConversations, nodePlacementText, pickConversation, planEnterPlugin, planLeavePlugin,
+  busyElsewhereText, latestDraftCards, menuConversations, modeMenuBlocked, nodePlacementText, pickConversation, planEnterPlugin, planLeavePlugin,
   pluginReturn, pluginSteps, precheckChip, returnTarget, splitPrecheck,
 } from '../src/pages/workbench/pluginModeModel.js';
 
@@ -45,6 +45,28 @@ test('选「插件开发」：在跑、排队、自主构建在跑时不切；�
   // 列表顺序和更新时间不一致时按更新时间
   assert.deepEqual(planEnterPlugin({ items: [ITEMS[2], ITEMS[0]], sessionState: 'closed' }), { action: 'open', id: 'p2' });
   assert.deepEqual(planEnterPlugin({ items: [ITEMS[1]], sessionState: 'idle' }), { action: 'create' });
+  // 引擎正绑着、还没停下（在等你回答）的插件对话优先，不按更新时间落到别的那条
+  const waiting = [ITEMS[0], conv('p1', 'plugin', '2026-11-09T09:00:00Z', { live: true, state: 'waiting_user' })];
+  assert.deepEqual(planEnterPlugin({ items: waiting, sessionState: 'idle' }), { action: 'open', id: 'p1' });
+  const bound = [ITEMS[0], conv('p1', 'plugin', '2026-11-09T09:00:00Z', { live: true, state: 'idle' })];
+  assert.deepEqual(planEnterPlugin({ items: bound, sessionState: 'idle' }), { action: 'open', id: 'p2' });
+});
+
+test('模式菜单：切不过去的项点之前就标出来，原因和点了以后的提示一致', () => {
+  assert.deepEqual(modeMenuBlocked({ plugin: false, sessionState: 'idle' }), { L2: null, L4: null, plugin: null });
+  assert.deepEqual(modeMenuBlocked({ plugin: false, sessionState: 'running' }), { L2: null, L4: null, plugin: '这一轮跑完再切' });
+  assert.deepEqual(modeMenuBlocked({ plugin: false, sessionState: 'idle', autobuildRunning: true }).plugin, '自主构建在跑，停下后再切');
+  assert.deepEqual(modeMenuBlocked({ plugin: true, sessionState: 'connecting' }), { L2: '这一轮跑完再切', L4: '这一轮跑完再切', plugin: null });
+  // 只是在等你回答不挡：到别的对话里发消息时平台会让出引擎
+  assert.deepEqual(modeMenuBlocked({ plugin: true, sessionState: 'waiting_user' }), { L2: null, L4: null, plugin: null });
+});
+
+test('发消息被别的对话挡下：说是哪一条；挡它的就是这条或认不出时用通用说法', () => {
+  const err = { code: 'session_busy', details: { running_conversation_id: 'p1' } };
+  assert.equal(busyElsewhereText(err, ITEMS, 'c1'), '「p1」在运行，停下后再发');
+  assert.equal(busyElsewhereText(err, ITEMS, 'p1'), null);
+  assert.equal(busyElsewhereText(err, [], 'c1'), null);
+  assert.equal(busyElsewhereText({ code: 'message_duplicate' }, ITEMS, 'c1'), null);
 });
 
 test('离开插件开发：回最近的建模对话（不回自主构建的运行对话），没有就新建；在跑时不切', () => {

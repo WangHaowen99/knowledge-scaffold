@@ -342,6 +342,57 @@ def test_run_turn_with_interaction_and_result(tmp_path, monkeypatch):
     assert tokens["ops"] == [("clear", None), ("save", "jiuwen:onto-p1")]
 
 
+def test_text_before_a_question_is_handled_before_the_question_is_asked(tmp_path, monkeypatch):
+    """提问前那段话（随这一轮收尾才整段入队）要先被会话宿主处理、落盘，再出提问卡；
+    不然重开对话时卡片排到话前面（评审 P11）。"""
+    from openjiuwen.core.runner import Runner
+
+    seen = []
+
+    async def permission(tool_name, tool_input, title, description):
+        seen.append("ask")
+        return {"behavior": "allow", "updated_input": {"answers": {"选哪条？": "甲"}}}
+
+    rounds = []
+
+    def fake_stream(agent, inputs, session=None):
+        rounds.append(inputs["query"])
+
+        async def first():
+            yield chunk(
+                "__interaction__",
+                SimpleNamespace(id="i1", value=SimpleNamespace(
+                    tool_name="ask_user", questions=[{"question": "选哪条？", "options": [{"label": "甲"}]}])),
+            )
+            yield chunk("llm_output", {"content": "这个需求做不成插件。"})
+
+        async def second():
+            yield chunk("llm_output", {"content": "好"})
+
+        return first() if len(rounds) == 1 else second()
+
+    monkeypatch.setattr(Runner, "run_agent_streaming", staticmethod(fake_stream))
+    engine = JiuwenEngine(make_ctx(tmp_path, permission=permission))
+    engine.client = object()
+    engine._tracker = SimpleNamespace(total_input_tokens=1, total_output_tokens=1)
+
+    async def scenario():
+        async def read():
+            async for event in engine.events():
+                if event["type"] == "assistant_message":
+                    seen.append(event["blocks"][-1]["text"])
+                if event["type"] == "result":
+                    return
+
+        reader = asyncio.create_task(read())
+        await asyncio.sleep(0)
+        await engine._run_turn("开始")
+        await asyncio.wait_for(reader, timeout=5)
+
+    asyncio.run(scenario())
+    assert seen[:2] == ["这个需求做不成插件。", "ask"]
+
+
 def test_run_turn_reports_context_usage_before_result(tmp_path, monkeypatch):
     from openjiuwen.core.runner import Runner
 

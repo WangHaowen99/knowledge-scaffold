@@ -17,6 +17,7 @@
 .wb-cmd-pop{bottom:calc(100% + 8px);left:0;width:260px;max-height:360px;overflow:auto}
 .wb-ref-pop{bottom:calc(100% + 8px);left:0;width:380px}
 .wb-mode-pop{bottom:calc(100% + 8px);right:40px;width:180px;min-width:0}
+.wb-mode-pop .mi.off,.wb-mode-pop .mi.off:hover{color:var(--muted);background:none;cursor:default}
 /* 导航栏节点的下拉（节点模型重构 2b）：节点名可点，下拉沿用 .menu */
 .wx-nd{position:relative;display:flex;align-items:center}
 .wx-st.act{cursor:pointer;border-radius:8px;padding:4px 6px;margin:-4px -6px;transition:background .15s}

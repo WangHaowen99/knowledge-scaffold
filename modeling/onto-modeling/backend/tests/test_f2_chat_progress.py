@@ -290,3 +290,15 @@ def test_history_keeps_one_subagent_card_with_its_latest_state():
     data = subs[0]["data"]
     assert data["status"] == "done" and data["brief"] == "任务说明" and data["step_count"] == 1
     assert data["progress_text"] == "读取资料「a」"
+
+
+def test_group_duration_ignores_wall_clock_jumps(monkeypatch):
+    """工作过程的用时按单调时钟算：校时把墙上时钟往回拨时不出负数（评审 P5 的「-8 秒」）。"""
+    turn = timeline.Turn.new()
+    turn.add_step("t1", "读文件")
+    turn.close_step("t1")
+    real = timeline.time.time
+    monkeypatch.setattr(timeline.time, "time", lambda: real() - 30)
+    turn.finish("done")
+    group = turn.group()
+    assert group["duration_ms"] is not None and 0 <= group["duration_ms"] < 5000
