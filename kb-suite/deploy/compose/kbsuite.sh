@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Manage the kb-suite stack with Docker Compose.
 #
-#   ./kbsuite.sh build      build kb-service, kb-gateway + adapters, plugin frontend, docreader, WeKnora config and Swarm (develop; SWARM_TAG=0.2.7 for PyPI)
+#   ./kbsuite.sh build      build kb-service, kb-gateway + adapters, plugin frontend, docreader, WeKnora config and Swarm (default release 0.2.8)
 #   ./kbsuite.sh build-kbs         kb-service image only
 #   ./kbsuite.sh build-plugin      plugin pages only (frontend/dist, picked up on the next swarm restart)
 #   ./kbsuite.sh build-docreader   docreader overlay from $WEKNORA_REPO@$WEKNORA_REF
 #   ./kbsuite.sh build-da          DA-java from core/runtime develop + solution common
 #   ./kbsuite.sh build-lf          Loop Forest service (needs build-da's Maven artifacts)
-#   ./kbsuite.sh build-swarm       plugin pages + Swarm 0.2.7 image (with the DA harness provider)
+#   ./kbsuite.sh build-swarm       plugin pages + Swarm release image (default 0.2.8, with the DA harness provider)
 #   ./kbsuite.sh build-swarm-dev   plugin pages + Swarm image from $SWARM_REPO@$SWARM_REF (develop)
 #   ./kbsuite.sh build-gateway     kb-gateway and the WeKnora / DA knowledge-pipeline adapters
 #   ./kbsuite.sh build-da-kb       DA knowledge pipeline image from $DA_TS_SRC (a DeepAnalyze source tree);
@@ -146,8 +146,22 @@ bootstrap() {
 
 cmd="${1:-}"
 shift || true
+if [ -z "${SWARM_TAG+x}" ] && [ -f "$KBS_SECRETS_DIR/deploy.env" ]; then
+  env_export "$KBS_SECRETS_DIR/deploy.env" SWARM_TAG
+fi
+swarm_release=0.2.8
+case "${SWARM_TAG:-}" in
+  0.2.*) swarm_release="$SWARM_TAG" ;;
+  dev|dev-*)
+    if [ -z "${SWARM_HOME_SUFFIX+x}" ]; then
+      if [ -f "$KBS_SECRETS_DIR/deploy.env" ]; then env_export "$KBS_SECRETS_DIR/deploy.env" SWARM_HOME_SUFFIX; fi
+      export SWARM_HOME_SUFFIX="${SWARM_HOME_SUFFIX--dev}"
+    fi
+    ;;
+esac
+
 build_swarm() {
-  docker build -t kb-suite/swarm:0.2.7 \
+  docker build -t "kb-suite/swarm:$swarm_release" --build-arg "WORKSWARM_VERSION=$swarm_release" \
     --build-context da-harness="$ROOT/harness/da-harness" "$HERE/swarm"
 }
 
@@ -296,8 +310,10 @@ case "$cmd" in
     build_plugin
     build_docreader
     build_weknora_config
-    # compose defaults to the develop Swarm; SWARM_TAG=0.2.7 builds the PyPI one.
-    if [ "${SWARM_TAG:-dev}" = 0.2.7 ]; then build_swarm; else build_swarm_dev; fi
+    case "${SWARM_TAG:-$swarm_release}" in
+      0.2.*) build_swarm ;;
+      *) build_swarm_dev ;;
+    esac
     ;;
   build-kbs) docker build -t kb-suite/kb-service:"${KBS_TAG:-dev}" "$ROOT/service/kb-service" ;;
   build-plugin) build_plugin ;;

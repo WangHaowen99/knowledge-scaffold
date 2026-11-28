@@ -1,15 +1,15 @@
 # Docker Compose 部署（kb-suite）
 
-入口：`http://<部署机>:5199`。这是 JiuwenSwarm 的 Web 界面，默认用 develop 源码构建的开发版（`kb-suite/swarm:dev`，提交号见镜像标签 `kb-suite.swarm-commit`），没有改源码。左侧导航里有两个插件页面：「知识库」是 kb-manager，「知识求索」是 da-analyst。DA 还以「三方 Agent」的身份接进了集群模式，可以当团队成员用。
+本机入口为 `http://localhost:5199`。JiuwenSwarm 默认使用 PyPI 发布版 0.2.8。左侧导航里有两个插件页面，「知识库」是 kb-manager，「知识求索」是 da-analyst。DA 还以「三方 Agent」的身份接进了集群模式，可以当团队成员用。
 
-回到 PyPI 发布版 0.2.7：`SWARM_TAG=0.2.7 SWARM_HOME_SUFFIX= ./kbsuite.sh up`。两个版本的工作区卷是分开的（`kb-suite_swarm-home` / `kb-suite_swarm-home-dev`），互不迁移。
+运行 `./kbsuite.sh build-swarm` 构建发布镜像，运行 `./kbsuite.sh up` 启动。开发版先运行 `./kbsuite.sh build-swarm-dev`，再以 `SWARM_TAG=dev SWARM_HOME_SUFFIX=-dev ./kbsuite.sh up` 启动。发布版与开发版分别使用 `kb-suite_swarm-home` 和 `kb-suite_swarm-home-dev` 工作区卷。
 
 ## 组成
 
 | 服务 | 镜像 | 端口 | 说明 |
 |---|---|---|---|
 | edge | `nginx:alpine` | 5199 → 8080 | 对外入口，反代到 swarm:5173；加 gzip，插件页带哈希的资源改长缓存（见下文「切换插件页」） |
-| swarm | `kb-suite/swarm:dev`（或 `:0.2.7`） | 只在 compose 网络内（5173） | Swarm 的 Web、Gateway、AgentServer；镜像里带 `deepanalyze-harness`、`loopforest-harness` |
+| swarm | `kb-suite/swarm:0.2.8`（开发版为 `:dev`） | 只在 compose 网络内（5173） | Swarm 的 Web、Gateway、AgentServer；镜像里带 `deepanalyze-harness`、`loopforest-harness` |
 | kb-gateway | `kb-suite/kb-gateway:dev` | 127.0.0.1:5195 → 8080 | 对外的知识接口：管理 API、DA 工具接口 `/v1/tools/*`、MCP `/mcp/`，按知识库路由到各知识后端，见下文「知识网关」 |
 | kbs-api | `kb-suite/kb-service:dev` | 127.0.0.1:5198 → 8080 | 默认知识后端（knowledge-provider/v1），另有原生的 DA 工具接口和 MCP |
 | kbs-worker | 同上 | — | 解析、切分、向量化，以及摘要、问题生成、Wiki、知识库描述等增强任务 |
@@ -59,11 +59,11 @@
 ```bash
 cd deploy/compose
 export PATH=/usr/bin:$PATH      # 让 docker 指向 /usr/bin/docker（Docker Desktop 的 WSL 集成）
-./kbsuite.sh build            # kb-service、插件前端、docreader、Swarm（默认 develop 版；SWARM_TAG=0.2.7 构建发布版）
+./kbsuite.sh build            # 构建整套镜像，Swarm 默认使用发布版 0.2.8
 ./kbsuite.sh build-kbs        # 只重建 kb-service 镜像
 ./kbsuite.sh build-plugin     # 只重建插件页面（frontend/dist），swarm 重启后生效
 ./kbsuite.sh build-swarm-dev  # 插件页面 + develop 版 Swarm 镜像（SWARM_REPO / SWARM_REF，默认 origin/develop）
-./kbsuite.sh build-swarm      # 插件页面 + 0.2.7 版 Swarm 镜像
+./kbsuite.sh build-swarm      # 插件页面 + 0.2.8 版 Swarm 镜像
 ./kbsuite.sh build-docreader  # 只重建 docreader 覆盖镜像（WEKNORA_REPO / WEKNORA_REF）
 ./kbsuite.sh build-da         # 只构建 DA-java（见下）
 ./kbsuite.sh build-lf         # 只构建 Loop Forest 服务（要先 build-da，见下）
@@ -277,7 +277,7 @@ DA 有两种用法。
 插件后端的单元测试（在 Swarm 镜像里跑，需要镜像里的 jiuwenswarm 和 openjiuwen）：
 
 ```bash
-docker run --rm --entrypoint sh -v "$PWD/swarm-kb-plugin:/src:ro" kb-suite/swarm:dev -c \
+docker run --rm --entrypoint sh -v "$PWD/swarm-kb-plugin:/src:ro" kb-suite/swarm:0.2.8 -c \
   "pip install -q pytest pytest-asyncio && cd /tmp && python -m pytest -q -p no:cacheprovider -o asyncio_mode=auto /src/tests"
 ```
 
