@@ -1362,7 +1362,11 @@ class JiuwenEngine(ObservableEngine):
     async def _run_turn(self, text: str) -> None:
         from openjiuwen.core.runner import Runner
         from openjiuwen.core.session import InteractiveInput
+        from openjiuwen.core.sys_operation.cwd import init_cwd
 
+        # SDK 只在 agent 第一次初始化的那个任务里设 cwd（ContextVar），之后每一轮都是新任务：不按轮设的话，
+        # 工具解析相对路径时退回进程目录，读本体被沙箱以「越界」拒掉。值与 SDK 初始化时相同
+        init_cwd(str(self._ctx.cwd), project_root=str(self._ctx.cwd), workspace=str(shadow_dir(self._ctx.project_id)))
         started = time.time()
         before = self._usage_snapshot()
         if self._progress_tracker is None:

@@ -1057,3 +1057,34 @@ def test_kill_finishes_even_if_abort_hangs(tmp_path, monkeypatch):
 
     assert asyncio.run(scenario()).cancelled()
     assert engine.client is None
+
+
+def test_every_turn_resolves_relative_paths_in_the_project_copy(tmp_path, monkeypatch):
+    """SDK 只在 agent 第一次初始化的那个任务里设 cwd；之后每一轮是新任务，不按轮设的话相对路径落到进程目录，
+    读本体时被沙箱以「越界」拒掉。每一轮开始时按项目副本设好。"""
+    import contextvars
+
+    from openjiuwen.core.runner import Runner
+    from openjiuwen.core.sys_operation.cwd import get_cwd
+
+    seen = []
+
+    def fake_stream(agent, inputs, session=None):
+        async def run():
+            seen.append(get_cwd())
+            yield chunk("llm_output", {"content": "好"})
+
+        return run()
+
+    monkeypatch.setattr(Runner, "run_agent_streaming", staticmethod(fake_stream))
+    engine = JiuwenEngine(make_ctx(tmp_path))
+    engine.client = object()
+    engine._tracker = SimpleNamespace(total_input_tokens=0, total_output_tokens=0)
+
+    async def scenario():
+        # 和会话宿主一样：每一轮在一个没设过 cwd 的新任务里跑
+        for text in ("第一轮", "第二轮"):
+            await asyncio.create_task(engine._run_turn(text), context=contextvars.Context())
+
+    asyncio.run(scenario())
+    assert seen == [str(tmp_path.resolve())] * 2
