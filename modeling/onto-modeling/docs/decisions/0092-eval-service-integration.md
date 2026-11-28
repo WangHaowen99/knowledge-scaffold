@@ -38,7 +38,7 @@
 - 约束 5 → 数据源只拿表头，写成只有表头行的 csv 放 `.ontology-state/eval-service/tables/{stem}/`（不进 git），给 `table_profile.py` 三方对账。
   不再放 `.ontology-state/eval-data/`：那是旧链路目录，启动迁移每次都会删。
 - X-05 没有调用方，评测优化已经覆盖它的用途 → 退役，`feedback.write` 权限范围随服务令牌的去留由 ADR-0098 一并处理。
-- 约束 6 → 旧版评测记录只读：照 develop 的「评测执行详情」显示最近一轮（读 `.ontology-state/eval.json`，启动迁移不再删它），完整回答读报告附带的 answers.json，旧接口 `/api/projects/{id}/eval/*` 仍是 410，GET 的 successor 指向新接口。旧运行器与 modeling 服务已删，不能停止、续接旧任务。
+- 约束 6 → 旧版评测记录只读（2026-11-28 随 develop !640 删除，见文末「后续」）：照 develop 的「评测执行详情」显示最近一轮（读 `.ontology-state/eval.json`，启动迁移不再删它），完整回答读报告附带的 answers.json，旧接口 `/api/projects/{id}/eval/*` 仍是 410，GET 的 successor 指向新接口。旧运行器与 modeling 服务已删，不能停止、续接旧任务。
 
 **做法**
 
@@ -90,3 +90,9 @@
 `eval_client` 的原则从「从不带服务身份」改为：默认只用用户自己的登录；登记、续期、撤销用户本人的委托，或后台凭委托读取时，
 才同时带建模的服务凭据（`X-Modeling-Service-Token`，值为 `ONTO_EVALUATION_SERVICE_TOKEN`）。服务凭据单独无用：评测服务要求它与
 委托句柄一起出示，委托只能读登记的知识包。
+
+## 后续（2026-11-28）
+
+develop !640 删除了建模服务里的数据评测接口和左栏「旧版评测记录」。按「除评测优化外与 develop 一致」的口径，ES-09～ES-11、
+发布页「⋯」里的「旧版评测记录」与对应前端一并删除；工作区里已有的报告留在文件树里。旧求解验证用例改回只读导出（SV-05），启动迁移不再删它。
+

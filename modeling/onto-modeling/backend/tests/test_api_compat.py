@@ -117,8 +117,8 @@ def test_legacy_error_body_carries_error_field(client):
 @pytest.mark.parametrize(
     "method,path,successor",
     [
-        # 旧评测的读接口指向只读的旧版评测记录（ADR-0092），写接口没有替代
-        ("GET", "/api/projects/p1/eval/sets", "/api/v1/projects/p1/legacy-evaluations"),
+        # 旧评测接口读写都没有替代（develop !640 删除了旧版评测记录）
+        ("GET", "/api/projects/p1/eval/sets", None),
         ("POST", "/api/projects/p1/eval/sets", None),
         ("POST", "/api/projects/p1/studio/lease", "/api/v1/projects/p1/scope"),
         ("GET", "/api/projects/p1/export?scope=package", "/api/v1/projects/p1/releases"),

@@ -21,7 +21,6 @@ import {
 } from './evaluationModel.js';
 import '../../styles/evaluation.css';
 
-export { LegacyEvaluations } from './LegacyEvaluations.jsx';
 export { SolverValidationCard } from './SolverValidationCard.jsx';
 
 const REPORT_LIMIT_HINT = '报告较长，仅显示前 2 MiB';

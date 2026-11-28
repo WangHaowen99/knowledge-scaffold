@@ -1,5 +1,5 @@
-"""已发布版本的独立评测（ADR-0092，ES-01～ES-06、ES-09～ES-11）：完成通知、状态索引、以用户登录读回结果，
-以及旧版评测记录只读。评测优化（ES-07、ES-08、ES-12）已随反馈演进包删除。
+"""已发布版本的独立评测（ADR-0092，ES-01～ES-06）：完成通知、状态索引、以用户登录读回结果。
+评测优化（ES-07、ES-08、ES-12）已随反馈演进包删除，旧版评测记录（ES-09～ES-11）随 develop !640 删除。
 
 评测服务是进程内的合成桩；标识与内容全部为合成数据。
 """
@@ -333,17 +333,18 @@ def test_optimization_and_writeback_routes_are_gone(env):
     manager, pid, stub, client = env
     for url in (f'/api/v1/projects/{pid}/evaluations/{RUN}/optimization',
                 f'/api/v1/projects/{pid}/evaluations/{RUN}/modeling-result',
-                f'/api/v1/projects/{pid}/legacy-evaluations/{LEGACY}/optimization'):
+                f'/api/v1/projects/{pid}/legacy-evaluations/eval-20261001-090000/optimization'):
         assert client.post(url, json={'note': '合成'}).status_code in (404, 405), url
     assert stub.calls == [] and not (manager.project_root(pid) / 'feedback').exists()
 
 
-def test_legacy_evaluation_mutations_stay_retired(env):
+def test_legacy_evaluation_routes_stay_retired(env):
     _, pid, _, client = env
     assert client.post(f'/api/projects/{pid}/eval/run', json={}).status_code == 410
-    # 读的旧接口也是 410，替代接口指向旧版评测记录（只读）
+    # 旧版评测记录也已删除（develop !640）：读的旧接口同样 410，没有替代；新接口不存在
     gone = client.get(f'/api/projects/{pid}/eval/status')
-    assert gone.status_code == 410 and gone.json()['details']['successor'] == f'/api/v1/projects/{pid}/legacy-evaluations'
+    assert gone.status_code == 410 and gone.json()['details']['successor'] is None
+    assert client.get(f'/api/v1/projects/{pid}/legacy-evaluations').status_code == 404
 
 
 @pytest.fixture
@@ -545,7 +546,6 @@ def test_evaluations_are_owner_only(env, monkeypatch):
     assert client.get(f'/api/v1/projects/{pid}/evaluations', headers=other).status_code in (403, 404)
     assert client.get(f'/api/v1/projects/{pid}/evaluations/{RUN}/report', headers=other).status_code in (403, 404)
     assert client.post(f'/api/v1/projects/{pid}/evaluations/{RUN}/regenerate', headers=other).status_code in (403, 404)
-    assert client.get(f'/api/v1/projects/{pid}/legacy-evaluations', headers=other).status_code in (403, 404)
 
 
 def test_local_mode_has_no_evaluation(env, monkeypatch):
@@ -601,79 +601,3 @@ def test_evaluation_entry_comes_only_from_deployment(env, monkeypatch):
         if 'evaluation/entry' in getattr(route, 'path', ''):
             writable |= {(route.path, method) for method in getattr(route, 'methods', ()) if method != 'GET'}
     assert writable == set()
-
-
-# ---- 旧版评测记录（只读，ES-09～ES-11） ----
-
-LEGACY = 'eval-20261001-090000'
-LEGACY_REPORT = '\n'.join([
-    '# 数据评测报告 — 2026-10-01 09:00', '', '## 逐用例明细', '',
-    '### 1. ✅ pass', '', '- **问题**：合成旧问题一', '', '- **标准答案**：', '', '  > 旧答案一', '',
-    '### 2. ❌ fail', '', '- **问题**：合成旧问题二', '', '- **标准答案**：', '', '  > 旧答案二', '',
-    '- **智能体回答**：', '', '  > 合成旧回答二', '  >', f'  > - **完整回答**：[按结果 ID 查看附件](reports/{LEGACY}.answers.json#r-2)', '',
-])
-LEGACY_STATE = {
-    'status': 'done', 'phase': 'evaluate', 'message': '评测完成（有效 2/2 条）', 'report': f'reports/{LEGACY}.md',
-    'report_round': 'round-1', 'round_id': 'round-1', 'data_source_name': '合成数据源', 'eval_set_name': '合成评测集',
-    'summary': {'total': 2, 'pass': 1, 'partial': 0, 'fail': 1, 'error': 0, 'score': 50, 'valid': 2, 'result_status': 'complete'},
-    'cases': [{'question': '合成旧问题一', 'verdict': 'pass', 'result_id': 'r-1'},
-              {'question': '合成旧问题二', 'verdict': 'fail', 'result_id': 'r-2', 'answer': '合成旧回答二', 'is_truncated': True,
-               'original_length': 900}],
-}
-
-
-def legacy_project(manager, pid, state=None):
-    root = manager.project_root(pid)
-    reports = root / 'reports'
-    reports.mkdir(exist_ok=True)
-    (reports / f'{LEGACY}.md').write_text(LEGACY_REPORT, encoding='utf-8')
-    (reports / f'{LEGACY}.answers.json').write_text(json.dumps({'answers': [
-        {'resultId': 'r-1', 'question': '合成旧问题一', 'finalAnswer': '旧回答一', 'verdict': 'pass', 'reason': '一致'},
-        {'resultId': 'r-2', 'question': '合成旧问题二', 'finalAnswer': '乙' * 900, 'verdict': 'fail', 'reason': '合成旧理由'},
-    ]}, ensure_ascii=False), encoding='utf-8')
-    _git(root, 'add', 'reports')
-    _git(root, 'commit', '-qm', 'chore: 合成旧版评测报告')
-    (root / '.ontology-state').mkdir(exist_ok=True)
-    (root / '.ontology-state' / 'eval.json').write_text(json.dumps(state or LEGACY_STATE, ensure_ascii=False), encoding='utf-8')
-    return root
-
-
-def test_legacy_record_shows_the_last_run_like_develop(env):
-    manager, pid, stub, client = env
-    base = f'/api/v1/projects/{pid}/legacy-evaluations'
-    assert client.get(base).json() == {'state': {}}
-    legacy_project(manager, pid)
-    value = client.get(base).json()
-    assert value['state']['status'] == 'done' and value['state']['cases'][1]['result_id'] == 'r-2'
-    assert set(value) == {'state'}
-    report = client.get(f'{base}/{LEGACY}').json()
-    assert report['content'].startswith('# 数据评测报告') and report['path'] == f'reports/{LEGACY}.md'
-    answer = client.get(f'{base}/{LEGACY}/answers/r-2').json()
-    assert answer == {'resultId': 'r-2', 'question': '合成旧问题二', 'fullAnswer': '乙' * 900, 'originalLength': 900,
-                      'truncated': False}
-    assert client.get(f'{base}/{LEGACY}/answers/r-9').json()['code'] == 'answer_not_found'
-    for stem in (STEM, 'eval-notes', '..%2Fsecret', f'{LEGACY}.answers'):
-        assert client.get(f'{base}/{stem}').status_code == 404
-    assert stub.calls == []  # 只读工作区，不找评测服务
-
-
-def test_legacy_running_state_shows_as_interrupted_without_rewriting(env):
-    manager, pid, _, client = env
-    root = legacy_project(manager, pid, {**LEGACY_STATE, 'status': 'running', 'message': '执行中'})
-    state = client.get(f'/api/v1/projects/{pid}/legacy-evaluations').json()['state']
-    assert state['status'] == 'interrupted' and state['message'] == '上一轮评测被服务重启中断' and state['resumable'] is False
-    assert json.loads((root / '.ontology-state' / 'eval.json').read_text(encoding='utf-8'))['status'] == 'running'
-
-
-def test_legacy_records_do_not_follow_links(env, tmp_path):
-    manager, pid, _, client = env
-    root = manager.project_root(pid)
-    outside = tmp_path / 'outside.json'
-    outside.write_text(json.dumps(LEGACY_STATE), encoding='utf-8')
-    (root / '.ontology-state').mkdir(exist_ok=True)
-    (root / '.ontology-state' / 'eval.json').symlink_to(outside)
-    (root / 'reports').mkdir(exist_ok=True)
-    (root / 'reports' / f'{LEGACY}.md').symlink_to(outside)
-    base = f'/api/v1/projects/{pid}/legacy-evaluations'
-    assert client.get(base).json()['state'] == {}
-    assert client.get(f'{base}/{LEGACY}').status_code == 404

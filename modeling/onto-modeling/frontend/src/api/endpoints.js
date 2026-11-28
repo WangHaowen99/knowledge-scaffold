@@ -319,9 +319,6 @@ export function createApi(client) {
     evaluationAnswer: (id, runId, resultId) => client.get(`${P(id)}/evaluations/${enc(runId)}/answers/${enc(resultId)}`), // ES-05
     regenerateEvaluation: (id, runId) => client.post(`${P(id)}/evaluations/${enc(runId)}/regenerate`, {}), // ES-06
     reportEvaluationFailure: (id, runId, note) => client.post(`${P(id)}/evaluations/${enc(runId)}/modeling-result`, { note }), // ES-08
-    legacyEvaluations: (id) => client.get(`${P(id)}/legacy-evaluations`), // ES-09
-    legacyEvaluation: (id, stem) => client.get(`${P(id)}/legacy-evaluations/${enc(stem)}`), // ES-10
-    legacyEvaluationAnswer: (id, stem, resultId) => client.get(`${P(id)}/legacy-evaluations/${enc(stem)}/answers/${enc(resultId)}`), // ES-11
 
     // 3.21b 知识包数据飞轮（develop !630）：评测建议 → 优化 → 发布 → 评测新版本
     flywheel: (id, { reconcile = false } = {}) => client.get(`${P(id)}/flywheel`, { query: { reconcile: reconcile ? 1 : 0 } }), // FW-01

@@ -95,24 +95,18 @@ test('status reads pass the reconcile flag', async () => {
   ]);
 });
 
-test('reports, answers and legacy records read their own routes', async () => {
+test('reports and answers read their own routes', async () => {
   const { api, calls } = recordingApi();
   await api.evaluationReport('project-alpha', 'run-a');
   await api.evaluationSuggestions('project-alpha', 'run-a');
   await api.evaluationAnswer('project-alpha', 'run-a', 'case-2');
   await api.regenerateEvaluation('project-alpha', 'run-a');
-  await api.legacyEvaluations('project-alpha');
-  await api.legacyEvaluation('project-alpha', 'eval-20261001-090000');
-  await api.legacyEvaluationAnswer('project-alpha', 'eval-20261001-090000', 'r 1');
   await api.evaluationEntry();
   assert.deepEqual(calls.map((c) => `${c.method} ${c.path}`), [
     'GET /projects/project-alpha/evaluations/run-a/report',
     'GET /projects/project-alpha/evaluations/run-a/suggestions',
     'GET /projects/project-alpha/evaluations/run-a/answers/case-2',
     'POST /projects/project-alpha/evaluations/run-a/regenerate',
-    'GET /projects/project-alpha/legacy-evaluations',
-    'GET /projects/project-alpha/legacy-evaluations/eval-20261001-090000',
-    'GET /projects/project-alpha/legacy-evaluations/eval-20261001-090000/answers/r%201',
     'GET /evaluation/entry',
   ]);
 });

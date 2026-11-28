@@ -3301,25 +3301,11 @@ ADR-0101 随反馈演进包删除了 `ES-07` 和读批次的 `R-11`、`R-12`、�
 
 `POST /api/v1/projects/{id}/evaluations/{run_id}/modeling-result` 随评测优化删除。
 
-#### ES-09 旧版评测记录
+#### ES-09～ES-11 旧版评测记录（已删除，develop !640）
 
-`GET /api/v1/projects/{id}/legacy-evaluations` · 所有者 · 旧：`GET /api/projects/{id}/eval/status`（410，successor 指这里） · 审计：否 · 页面：publish
-
-- 评测移出 onto 之前最近一轮的「评测执行详情」（develop 的 `GET /eval/status` 里的 `state`），只读；状态读 `.ontology-state/eval.json`，启动迁移不再删它。
-- 响应：`{state}`。`state` 没有旧记录时是 `{}`；仍是 `running` 的显示为 `interrupted`（旧运行器已删，不改盘上记录），`resumable` 恒为 false。
-  `evolution`、`evolution_enabled` 随反馈演进包删除（ADR-0101）。
-
-#### ES-10 旧版评测报告
-
-`GET /api/v1/projects/{id}/legacy-evaluations/{id}` · 所有者 · 审计：否 · 页面：publish
-
-- `{id}` 是报告文件名去掉 `.md`（`eval-<日期>-<时间>`）。响应：`{id, path, content, truncated}`，最多 2 MiB。
-
-#### ES-11 旧版报告的完整回答
-
-`GET /api/v1/projects/{id}/legacy-evaluations/{id}/answers/{result_id}` · 所有者 · 审计：否 · 页面：publish
-
-- 读同名 `.answers.json` 附件（develop 报告预览的首选来源）。响应：同 `ES-05`。错误：`answer_not_found`（「完整回答证据不可用」或「完整回答证据不存在或不属于当前评测轮次」）、`not_found`。
+develop 删除了建模服务里的数据评测接口和「旧版评测记录」入口，本组随之删除：`GET /api/v1/projects/{id}/legacy-evaluations`、
+`…/legacy-evaluations/{id}`、`…/legacy-evaluations/{id}/answers/{result_id}` 回 `404 not_found`。工作区里已有的 `reports/eval-*.md`
+和附件留在文件树里，`.ontology-state/eval.json` 留着不读。旧接口 `/api/projects/{id}/eval/*` 读写都回 `410 endpoint_removed`，没有替代。
 
 #### ES-12 旧版报告的评测优化（已删除，ADR-0101）
 
@@ -4809,7 +4795,7 @@ AuditEntry = {at, actor, action, description}
 | `PATCH /api/projects/{id}/resource-meta` | `R-03` | 改写 |
 | `DELETE /api/projects/{id}/resources` | `R-04` | 改写 |
 | `GET/PUT /api/projects/{id}/mcp` | `P-14` | 改写 |
-| `GET/POST/PUT/DELETE /api/projects/{id}/eval/*`（18 个） | GET 的替代是 `ES-09`（旧版评测记录只读） | 删除（第 11 章、ADR-0092） |
+| `GET/POST/PUT/DELETE /api/projects/{id}/eval/*`（18 个） | —（旧版评测记录随 develop !640 删除） | 删除（第 11 章、ADR-0092） |
 | `GET/PUT /api/projects/{id}/engine` | `P-12` | 改写 |
 | `GET /api/projects/{id}/studio/graph` | `ST-02` | 改写 |
 | `GET /api/projects/{id}/studio/elements/{eid}/flow` | `ST-05` | 改写 |

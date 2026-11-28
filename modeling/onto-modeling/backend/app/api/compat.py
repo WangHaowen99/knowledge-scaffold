@@ -175,9 +175,8 @@ RULES: tuple[Rule, ...] = (
     _r("DELETE", f"{_PROJ}/resources", _same("DELETE", f"{_V1}/resources")),
     _r("GET", f"{_PROJ}/mcp", _same("GET", f"{_V1}/mcp-servers")),
     _r("PUT", f"{_PROJ}/mcp", _same("PUT", f"{_V1}/mcp-servers")),
-    # 旧版评测记录只读（ADR-0092）：读的旧接口指向 ES-09，写的没有替代
-    _gone("GET", f"{_PROJ}/eval(?:/.*)?", f"{_V1}/legacy-evaluations"),
-    *(_gone(method, f"{_PROJ}/eval(?:/.*)?") for method in ("POST", "PUT", "DELETE")),
+    # 旧评测接口：建模服务不再提供数据评测（develop !640），读写都没有替代
+    *(_gone(method, f"{_PROJ}/eval(?:/.*)?") for method in ("GET", "POST", "PUT", "DELETE")),
     _r("GET", f"{_PROJ}/engine", _same("GET", f"{_V1}/engine")),
     _r("PUT", f"{_PROJ}/engine", _same("PUT", f"{_V1}/engine")),
     _r("GET", f"{_PROJ}/studio/graph", _same("GET", f"{_V1}/studio/graph")),

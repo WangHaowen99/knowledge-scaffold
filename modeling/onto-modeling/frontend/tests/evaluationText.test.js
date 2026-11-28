@@ -1,8 +1,8 @@
-// 评测页面的纯函数（照 develop 的 CenterPane 报告预览、EvalRunDetail、SolverModelPanel）；数据全部为合成
+// 评测页面的纯函数（照 develop 的 CenterPane 报告预览、SolverModelPanel）；数据全部为合成
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  ANSWER_LINK, formatDuration, linkifyPaths, phaseIndex, shortRevision, solverValidationText, verdictCounts,
+  ANSWER_LINK, linkifyPaths, shortRevision, solverValidationText,
 } from '../src/pages/evaluation/evaluationText.js';
 
 test('workspace paths in report text become file links, code stays as is', () => {
@@ -16,17 +16,6 @@ test('full answer links of a report carry the attachment and the result id', () 
   assert.deepEqual([...ANSWER_LINK.exec('reports/eval-20261001-090000.answers.json#case-3')].slice(1),
     ['reports/eval-20261001-090000.answers.json', 'case-3']);
   assert.equal(ANSWER_LINK.exec('https://example.com/a.answers.json#x'), null);
-});
-
-test('the legacy run detail maps phases, durations and verdicts like develop', () => {
-  assert.equal(phaseIndex({ status: 'done' }), 5);
-  assert.equal(phaseIndex({ status: 'running', phase: 'queued' }), -1);
-  assert.equal(phaseIndex({ status: 'running', phase: 'graph_import' }), 2);
-  assert.equal(phaseIndex({ status: 'interrupted', phase: 'evaluate' }), 4);
-  assert.equal(formatDuration(65), '01:05');
-  assert.equal(formatDuration(3725), '1:02:05');
-  assert.deepEqual(verdictCounts([{ verdict: 'pass' }, { verdict: 'fail' }, { verdict: 'running' }, { verdict: 'pass' }]),
-    { pass: 2, partial: 0, fail: 1, error: 0 });
 });
 
 test('the solver validation card says where the current revision stands', () => {

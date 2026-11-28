@@ -1,5 +1,6 @@
-"""独立评测对接（ADR-0092，API 契约 3.21a ES-00～ES-06、ES-09～ES-11）：评测入口、完成通知、已发布版本的评测结果，
-以及旧版评测记录（只读）。评测优化（ES-07、ES-08、ES-12）随反馈演进包删除，改由数据飞轮承接（ADR-0108）。
+"""独立评测对接（ADR-0092，API 契约 3.21a ES-00～ES-06）：评测入口、完成通知、已发布版本的评测结果。
+评测优化（ES-07、ES-08、ES-12）随反馈演进包删除，改由数据飞轮承接（ADR-0108）；旧版评测记录（ES-09～ES-11）
+随 develop !640 删除，工作区里已有的 reports/eval-*.md 留在文件树里。
 
 评测在评测服务里跑。onto 只给浏览器入口、收评测服务的完成通知，查看时以当前用户自己的登录读回报告、优化建议和
 完整回答。
@@ -18,7 +19,7 @@ from fastapi import APIRouter, Depends, Request
 
 from ..api import deps
 from ..api.errors import ApiError
-from ..services import auth, evaluation_entry, legacy_evaluations, package_evaluations
+from ..services import auth, evaluation_entry, package_evaluations
 from ..services.workspace import WorkspaceError
 
 NOTIFICATIONS_PATH = "/api/internal/evaluation/notifications"
@@ -104,24 +105,3 @@ def regenerate(project_id: str, run_id: str, request: Request):
     """ES-06"""
     token, subject = _caller(project_id, request)
     return package_evaluations.regenerate(project_id, subject, token, run_id)
-
-
-# ---- 旧版评测记录（只读） ----
-
-
-@router.get(f"{_P}/legacy-evaluations")
-def legacy_status(project_id: str, request: Request):
-    """ES-09：评测移出前最近一轮的执行详情（develop 的「评测执行详情」）。"""
-    return legacy_evaluations.status(deps.require_owner(project_id, request))
-
-
-@router.get(f"{_P}/legacy-evaluations/{{stem}}")
-def legacy_report(project_id: str, stem: str, request: Request):
-    """ES-10"""
-    return legacy_evaluations.report(deps.require_owner(project_id, request), stem)
-
-
-@router.get(f"{_P}/legacy-evaluations/{{stem}}/answers/{{result_id}}")
-def legacy_answer(project_id: str, stem: str, result_id: str, request: Request):
-    """ES-11"""
-    return legacy_evaluations.answer(deps.require_owner(project_id, request), stem, result_id)

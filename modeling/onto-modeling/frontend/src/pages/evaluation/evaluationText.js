@@ -22,38 +22,6 @@ export function linkifyPaths(md) {
   }).join('');
 }
 
-// ---- 旧版评测记录：评测执行详情 ----
-
-export const PHASES = [['package', '打包'], ['import', '导入'], ['ds', '数据源'], ['cases', '用例'], ['evaluate', '执行']];
-const DS_PHASES = ['data_import', 'data_source', 'graph_import'];
-export const VERDICTS = [['pass', '通过'], ['partial', '部分'], ['fail', '失败'], ['error', '异常']];
-export const VERDICT_TEXT = { ...Object.fromEntries(VERDICTS), running: '执行中', pending: '待执行' };
-export const TERMINAL = new Set(VERDICTS.map(([key]) => key));
-export const STATUS_TEXT = { running: '运行中', done: '已完成', failed: '存在技术异常', stopped: '已停止', interrupted: '已中断' };
-export const POLL_MS = 8000;
-
-export function phaseIndex(st) {
-  if (st.status === 'done') return PHASES.length;
-  // 排队等待评测槽位：还没进入任何阶段
-  if (st.phase === 'queued') return -1;
-  const key = DS_PHASES.includes(st.phase) ? 'ds' : st.phase;
-  return Math.max(0, PHASES.findIndex(([k]) => k === key));
-}
-
-export function formatDuration(seconds) {
-  const total = Math.max(0, Math.floor(seconds));
-  const h = Math.floor(total / 3600);
-  const m = String(Math.floor((total % 3600) / 60)).padStart(2, '0');
-  const s = String(total % 60).padStart(2, '0');
-  return h ? `${h}:${m}:${s}` : `${m}:${s}`;
-}
-
-export function verdictCounts(cases) {
-  const counts = { pass: 0, partial: 0, fail: 0, error: 0 };
-  (cases || []).forEach((c) => { if (TERMINAL.has(c.verdict)) counts[c.verdict] += 1; });
-  return counts;
-}
-
 // ---- 求解验证卡 ----
 
 export const shortRevision = (revision) => (revision ? String(revision).replace(/^sha256:/, '').slice(0, 10) : '—');

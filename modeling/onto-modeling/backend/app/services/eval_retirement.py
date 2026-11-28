@@ -7,7 +7,7 @@
    用到（「# 数据来源」声明或按列推断），复制进 ``resource/excel/``，在 materials.json 标为
    schema，只提交这些路径；
 2. **清状态**：删掉 .ontology-state 下的评测上传表（eval-data/），以及项目元数据里的
-   Modeling 关联字段。最近一轮的状态 eval.json 留着，「旧版评测记录」只读显示它（ADR-0092）。
+   Modeling 关联字段。最近一轮的状态 eval.json 留着不读（旧版评测记录随 develop !640 删除）。
 
 全部项目处理完，删掉数据目录下的评测数据源配置（eval-data-sources/，含连接密码）与 Modeling
 清理队列。单个项目迁表失败只记运维错误日志，它的评测数据留到下次启动再迁；数据源配置不等它，

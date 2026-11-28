@@ -96,7 +96,7 @@ def test_referenced_upload_moves_into_resource_and_state_is_purged(manager):
     assert sorted(head_files(root)) == ["resource/excel/业务表.xlsx", "resource/materials.json"]
     assert "ontology/rule/未提交.md" in _git(root, "-c", "core.quotePath=false", "status", "--porcelain")
     assert not (root / ".ontology-state" / "eval-data").exists()
-    # 最近一轮的状态留给「旧版评测记录」只读显示（ADR-0092）
+    # 最近一轮的状态留着不读（旧版评测记录随 develop !640 删除），不替用户删数据
     assert (root / ".ontology-state" / "eval.json").read_text(encoding="utf-8") == '{"status": "done"}'
     # 旧验证用例保留，求解页只读导出（SV-05，同 develop）
     assert (root / ".ontology-state" / "solver-validation-cases.json").read_text(encoding="utf-8") == "[]"

@@ -1,6 +1,6 @@
 // 发布知识包：一栏三块。
 // 1. 发布卡：一句结论（能不能发、哪几项没通过）+「发布」+ 选版本；检查项小标签（PB-01 门禁链，点一下跳到对应问题）；
-//    未确认改动、上次发布、发布后「去评测」；「⋯」里是重新检查、导出迁移包（P-09）、旧版评测记录（ES-09）。
+//    未确认改动、上次发布、发布后「去评测」；「⋯」里是重新检查、导出迁移包（P-09）。
 // 2. 需要处理：没通过或有提醒的检查项各一张卡（PublishProblems：数据绑定修正 PB-02、求解契约、结构自检、包门禁「去运行」FL-05）。
 // 3. 已发布版本：Hub 版本（HB-05，带评测 ES-02、对比 PC 组）与本地发布记录（PB-04～PB-07）合一张表，表头有共享（HB-11）。
 // 发布走 PB-03（求解包要确认未验证；只剩数据绑定没过时直接按降级发布）；项目流 release.updated（EP-19）、flow.updated（EP-01）、
@@ -12,7 +12,7 @@ import { toast } from '../../app/toast.jsx';
 import { errorText, formatBytes } from '../../api/errors.js';
 import { ShellP } from '../../shell/Shell.jsx';
 import { useProjectEvent } from '../plugin/parts.jsx';
-import { EvaluationDialogs, LegacyEvaluations, useReleaseEvaluations } from '../evaluation/ReleaseEvaluation.jsx';
+import { EvaluationDialogs, useReleaseEvaluations } from '../evaluation/ReleaseEvaluation.jsx';
 import { notifyPackagePublished } from '../evaluation/evaluationModel.js';
 import { useFlywheelPanel } from '../flywheel/FlywheelPanel.jsx';
 import PackageCompare from './PackageCompare.jsx';
@@ -175,7 +175,6 @@ export default function PublishPage() {
   const [solverNotice, setSolverNotice] = useState(null); // 求解包发布后待验证：develop 成功提示里的「去评测」
   const [manifestFor, setManifestFor] = useState(null);
   const [starting, setStarting] = useState(false);
-  const [legacyOpen, setLegacyOpen] = useState(false);
   // 版本对比（PackageCompare）：{releaseId, version}，空对象表示不带初始版本、默认比最近两版
   const [compareFor, setCompareFor] = useState(null);
   // 发布或回退后记录数变了就重读评测状态
@@ -304,7 +303,6 @@ export default function PublishPage() {
   const menu = [
     { label: '重新检查', icon: 'refresh', disabled: checking, onClick: () => runCheck({ refresh: true }) },
     { label: '导出迁移包', icon: 'archive', hint: '含资料和版本历史', onClick: exportTransfer },
-    { label: '旧版评测记录', icon: 'history', onClick: () => setLegacyOpen(true) },
   ];
 
   return (
@@ -350,7 +348,6 @@ export default function PublishPage() {
         />
       </div>
       <EvaluationDialogs ev={ev} />
-      <LegacyEvaluations pid={pid} open={legacyOpen} onClose={() => setLegacyOpen(false)} />
       <PackageCompare open={!!compareFor} projectId={pid} projectName={meta?.name || ''} initialReleaseId={compareFor?.releaseId || ''}
         initialVersion={compareFor?.version || ''} onClose={() => setCompareFor(null)} />
       <ManifestDrawer rec={manifestFor} onClose={() => setManifestFor(null)} onDownload={download} />
