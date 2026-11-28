@@ -182,6 +182,9 @@ def workspace_changed(project_id: str, *, commit: str, source: str, by: str, pat
     drafts = sorted({path.split("/")[1] for path in paths if path.startswith("plugins/") and path.count("/") >= 2})
     if drafts:
         plugin_drafts_changed(project_id, drafts)
+        from .plugin_mode import drafts as plugin_drafts
+
+        _guard("conversation.updated", plugin_drafts.sync_titles, project_id, root, drafts)
     if any(path.startswith(("resource/", "research/")) for path in paths):
         # 资料地图要抽取资料原文，放后台线程，不拖慢提交
         threading.Thread(target=_guard, args=("materials.updated", materials_changed, project_id), daemon=True).start()

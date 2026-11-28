@@ -622,14 +622,14 @@ def test_reverting_the_draft_to_an_installed_version_rolls_back_without_a_new_up
     put_draft(root, make_node_pack(tmp_path / "src", tenant=True))
     url = f"{_drafts(project_id)}/naming"
     original = (root / "plugins/naming/commands/naming-check.md").read_text(encoding="utf-8")
+    original_manifest = (root / "plugins/naming/manifest.yaml").read_text(encoding="utf-8")
     assert client.post(f"{url}/install", json={}, headers=AS_OWNER).json()["version"] == "0.1.0"
     client.put(f"{url}/files", json={"path": "commands/naming-check.md", "content": "按新约定检查 $ARGUMENTS\n"},
                headers=AS_OWNER)
     assert client.post(f"{url}/install", json={}, headers=AS_OWNER).json()["version"] == "0.1.1"
     uploads = len(client.get(MINE, headers=AS_OWNER).json()["items"])
-    # 撤回到 0.1.0 的内容：清单号和内容都和装过的 0.1.0 一样
-    manifest = (root / "plugins/naming/manifest.yaml").read_text(encoding="utf-8").replace("version: 0.1.1", "version: 0.1.0")
-    client.put(f"{url}/files", json={"path": "manifest.yaml", "content": manifest}, headers=AS_OWNER)
+    # 撤回到 0.1.0 的内容：清单（版本号、平台补的更新说明）和内容都和装过的 0.1.0 一样
+    client.put(f"{url}/files", json={"path": "manifest.yaml", "content": original_manifest}, headers=AS_OWNER)
     client.put(f"{url}/files", json={"path": "commands/naming-check.md", "content": original}, headers=AS_OWNER)
     draft = client.get(url, headers=AS_OWNER).json()["install"]
     assert draft["state"] == "outdated" and draft["reuse"] is True and draft["next_version"] == "0.1.0"
@@ -638,6 +638,82 @@ def test_reverting_the_draft_to_an_installed_version_rolls_back_without_a_new_up
     assert back.json()["version"] == "0.1.0" and back.json()["upload_id"] is None
     assert lockfile.read(root).get("naming").version == "0.1.0"
     assert len(client.get(MINE, headers=AS_OWNER).json()["items"]) == uploads
+
+
+def test_install_writes_its_own_changelog_instead_of_copying_the_last_one(env, tmp_path):
+    """网页上手改、助手忘了改更新说明：再装时不沿用上一版的说明，平台补一句改了哪些文件；写了新说明的照用。"""
+    client, manager, _tmp = env
+    project_id = project(client)
+    root = manager.project_root(project_id)
+    put_draft(root, make_node_pack(tmp_path / "src", tenant=True, changelog="首个版本。"))
+    url = f"{_drafts(project_id)}/naming"
+    repository = manager.packs.repository
+    assert client.post(f"{url}/install", json={}, headers=AS_OWNER).json()["version"] == "0.1.0"
+    client.put(f"{url}/files", json={"path": "commands/naming-check.md", "content": "按新约定检查 $ARGUMENTS\n"},
+               headers=AS_OWNER)
+    assert client.post(f"{url}/install", json={}, headers=AS_OWNER).json()["version"] == "0.1.1"
+    manifest = yaml.safe_load((root / "plugins/naming/manifest.yaml").read_text(encoding="utf-8"))
+    assert manifest["version"] == "0.1.1" and manifest["changelog"] == "改了 commands/naming-check.md。"
+    assert repository.manifest("naming", "0.1.1").raw["changelog"] == "改了 commands/naming-check.md。"
+    assert repository.manifest("naming", "0.1.0").raw["changelog"] == "首个版本。"
+    # 写了新说明（版本号没升，平台升）：照用
+    text = (root / "plugins/naming/manifest.yaml").read_text(encoding="utf-8")
+    client.put(f"{url}/files", json={"path": "manifest.yaml",
+                                     "content": drafts.with_changelog(text, "检查范围加上操作。")}, headers=AS_OWNER)
+    assert client.post(f"{url}/install", json={}, headers=AS_OWNER).json()["version"] == "0.1.2"
+    assert repository.manifest("naming", "0.1.2").raw["changelog"] == "检查范围加上操作。"
+
+
+def test_with_changelog_keeps_the_rest_of_the_manifest():
+    single = "name: demo\n# 注释\nversion: 0.1.0\nchangelog: 旧说明\nkind: node\n"
+    assert drafts.with_changelog(single, "改了 a.md。") == 'name: demo\n# 注释\nversion: 0.1.0\nchangelog: "改了 a.md。"\nkind: node\n'
+    block = "name: demo\nchangelog: |\n  第一行\n  第二行\nversion: 0.1.0\n"
+    assert yaml.safe_load(drafts.with_changelog(block, "新说明")) == {"name": "demo", "changelog": "新说明", "version": "0.1.0"}
+    assert yaml.safe_load(drafts.with_changelog("name: demo\n", "新说明"))["changelog"] == "新说明"
+    assert drafts.changelog_note(["a.md", "b.md", "c.md", "d.md"]) == "改了 a.md、b.md、c.md 等 4 个文件。"
+
+
+def test_broken_manifest_still_shows_what_can_be_read(env, tmp_path):
+    """清单写坏（版本号不合法）：卡片标题、版本号、流程节点照读得出的显示，预检报没过。"""
+    client, manager, _tmp = env
+    project_id = project(client)
+    root = manager.project_root(project_id)
+    put_draft(root, make_node_pack(tmp_path / "src"))
+    url = f"{_drafts(project_id)}/naming"
+    text = (root / "plugins/naming/manifest.yaml").read_text(encoding="utf-8").replace("version: 0.1.0", "version: abc")
+    assert client.put(f"{url}/files", json={"path": "manifest.yaml", "content": text}, headers=AS_OWNER).status_code == 200
+    view = client.get(url, headers=AS_OWNER).json()
+    assert view["manifest_ok"] is False and view["precheck"]["state"] == "failed"
+    assert view["label"] == "naming 包" and view["version"] == "abc" and view["category"] == "capability"
+    assert [node["id"] for node in view["contents"]["nodes"]] == ["naming.check"]
+    assert view["contents"]["commands"] == [{"name": "naming-check", "label": "naming-check"}]
+    assert view["install"]["next_version"] is None
+
+
+def test_plugin_conversation_title_follows_the_draft_label(env, tmp_path):
+    """草稿改了名字（网页上改、一轮合入、撤回）：绑定它的插件对话跟着改名；手工改过标题的不动。"""
+    client, manager, _tmp = env
+    project_id = project(client)
+    root = manager.project_root(project_id)
+    put_draft(root, make_node_pack(tmp_path / "src"))
+    follows = conversation_store.create(project_id, kind="plugin")["id"]
+    conversation_store.bind_plugin(project_id, follows, "naming", "naming 包")
+    manual = conversation_store.create(project_id, kind="plugin")["id"]
+    conversation_store.bind_plugin(project_id, manual, "naming", "naming 包")
+    conversation_store.rename(project_id, manual, "我起的名字")
+    url = f"{_drafts(project_id)}/naming"
+    text = (root / "plugins/naming/manifest.yaml").read_text(encoding="utf-8").replace("label: naming 包", "label: 命名与主键检查")
+    assert text != (root / "plugins/naming/manifest.yaml").read_text(encoding="utf-8")
+    assert client.put(f"{url}/files", json={"path": "manifest.yaml", "content": text}, headers=AS_OWNER).status_code == 200
+    titles = {item["id"]: item["title"] for item in
+              client.get(f"/api/v1/projects/{project_id}/conversations", headers=AS_OWNER).json()["items"]}
+    assert titles[follows] == "命名与主键检查" and titles[manual] == "我起的名字"
+    updated = [event["data"]["conversation"]["id"] for event in buffered(project_id, "conversation.updated")]
+    assert follows in updated and manual not in updated
+    # 清单写坏、读不出名字：标题不动
+    assert client.put(f"{url}/files", json={"path": "manifest.yaml", "content": "name: [\n"},
+                      headers=AS_OWNER).status_code == 200
+    assert conversation_store.entry(project_id, follows)["title"] == "命名与主键检查"
 
 
 def test_install_refuses_failed_prechecks_and_taken_names(env, tmp_path):

@@ -101,6 +101,13 @@ function shortTime(iso, now = Date.now()) {
   return new Date(now).toDateString() === t.toDateString() ? hm : `${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${hm}`;
 }
 
+/** 草稿现在显示的版本号：装上的和草稿一样时是装上的版本，否则是现在点安装会用的号（已在包仓库里的自动升补丁号）。卡片和文件抽屉共用 */
+export function draftVersion(draft) {
+  const ins = draft?.install || {};
+  if (ins.state === 'installed') return ins.enabled_version || draft.version || null;
+  return ins.next_version || draft?.version || null;
+}
+
 /**
  * 草稿卡头部：眉题、名称、名称旁的标、副标题。
  * @param {object|null} draft DraftView；旧卡、没取到时按卡片快照（payload 的 name、version、changed_files）
@@ -121,8 +128,7 @@ export function draftCardHead(draft, card, mode, now) {
   if (mode === 'installed') {
     return { eyebrow: cat, title, chip: { tone: 'teal', icon: 'check', text: `已装 ${ins.enabled_version}` }, sub: updated };
   }
-  // 没装或改过：标的是现在点安装会用的版本号（已在包仓库里的自动升补丁号）
-  const ver = ins.next_version || draft.version;
+  const ver = draftVersion(draft);
   const chip = ver ? { tone: 'line', text: ver } : null;
   if (mode === 'update' || ins.state === 'outdated') {
     return { eyebrow: `${cat} · 草稿`, title, chip, sub: `已装 ${ins.enabled_version} · 改了 ${(ins.changes || []).length} 个文件` };

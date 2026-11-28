@@ -233,6 +233,24 @@ def bind_plugin(project_id: str, conversation_id: str, name: str, label: str = "
         return _view(project_id, conversation_id, found)
 
 
+def sync_plugin_title(project_id: str, name: str, label: str) -> list[str]:
+    """草稿改了名字（label）：绑定它、没手工改过标题的插件对话跟着改名。返回改了标题的对话。"""
+    title = (label or "").strip()[:TITLE_MAX]
+    if not title:
+        return []
+    changed = []
+    with _lock:
+        conversations = _load(project_id)
+        for conversation_id, entry in conversations.items():
+            if (entry.get("kind") == "plugin" and entry.get("plugin") == name and not entry.get("title_manual")
+                    and entry.get("title") != title):
+                entry["title"] = title
+                changed.append(conversation_id)
+        if changed:
+            _write(project_id, conversations)
+    return changed
+
+
 def plugin_conversation(project_id: str, name: str) -> str | None:
     """绑定这份草稿的插件对话（最近更新的那条）；没有时 None。"""
     with _lock:
